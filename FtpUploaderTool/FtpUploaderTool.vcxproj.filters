@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="源文件"><UniqueIdentifier>{F61722A0-679F-46A3-BE07-9421DFB885E9}</UniqueIdentifier><Extensions>cpp</Extensions></Filter>
+    <Filter Include="头文件"><UniqueIdentifier>{9F0966A7-75FB-4BDE-B01A-F5CFA3678668}</UniqueIdentifier><Extensions>h</Extensions></Filter>
+    <Filter Include="资源文件"><UniqueIdentifier>{8312C8DC-E95E-4DE2-A70E-9091ED5C1971}</UniqueIdentifier><Extensions>rc;ico</Extensions></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Common.cpp"><Filter>源文件</Filter></ClCompile><ClCompile Include="Config.cpp"><Filter>源文件</Filter></ClCompile><ClCompile Include="FtpClient.cpp"><Filter>源文件</Filter></ClCompile><ClCompile Include="Files.cpp"><Filter>源文件</Filter></ClCompile><ClCompile Include="Logger.cpp"><Filter>源文件</Filter></ClCompile><ClCompile Include="Worker.cpp"><Filter>源文件</Filter></ClCompile><ClCompile Include="TaskEditDlg.cpp"><Filter>源文件</Filter></ClCompile><ClCompile Include="FtpUploaderToolDlg.cpp"><Filter>源文件</Filter></ClCompile><ClCompile Include="FtpUploaderTool.cpp"><Filter>源文件</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="stdafx.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Common.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Config.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="FtpClient.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Files.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Logger.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Worker.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="TaskEditDlg.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="FtpUploaderToolDlg.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="FtpUploaderTool.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="resource.h"><Filter>头文件</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup><ResourceCompile Include="FtpUploaderTool.rc"><Filter>资源文件</Filter></ResourceCompile></ItemGroup>
+</Project>

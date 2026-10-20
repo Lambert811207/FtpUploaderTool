@@ -1,0 +1,17 @@
+Debug/
+Release/
+ipch/
+*.sdf
+*.opensdf
+*.suo
+*.user
+*.sln.docstates
+*.aps
+FtpUploaderTool/Debug/
+FtpUploaderTool/Release/
+Tests/Debug/
+Tests/Release/
+Config/
+Data/
+Log/
+Dump/
