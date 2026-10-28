@@ -1,33 +1,139 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
-    <ProjectConfiguration Include="Release|Win32"><Configuration>Release</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
-  <PropertyGroup Label="Globals"><ProjectGuid>{925BFDAA-AFC6-46D6-9791-58FA00DBA8D9}</ProjectGuid><Keyword>MFCProj</Keyword><RootNamespace>FtpUploaderTool</RootNamespace></PropertyGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{925BFDAA-AFC6-46D6-9791-58FA00DBA8D9}</ProjectGuid>
+    <Keyword>MFCProj</Keyword>
+    <RootNamespace>FtpUploaderTool</RootNamespace>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><PlatformToolset>v100</PlatformToolset><CharacterSet>Unicode</CharacterSet><UseOfMfc>Static</UseOfMfc></PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration"><UseDebugLibraries>true</UseDebugLibraries></PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration"><UseDebugLibraries>false</UseDebugLibraries><WholeProgramOptimization>true</WholeProgramOptimization></PropertyGroup>
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v100</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseOfMfc>Static</UseOfMfc>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings" />
-  <ImportGroup Label="PropertySheets"><Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" /></ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <PropertyGroup><OutDir>$(SolutionDir)$(Configuration)\</OutDir><IntDir>$(Configuration)\</IntDir><TargetName>FtpUploaderTool</TargetName><LinkIncremental>false</LinkIncremental></PropertyGroup>
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)$(Configuration)\</OutDir>
+    <IntDir>$(Configuration)\</IntDir>
+    <OutDir Condition="'$(Platform)'=='x64'">$(SolutionDir)x64\$(Configuration)\</OutDir>
+    <IntDir Condition="'$(Platform)'=='x64'">x64\$(Configuration)\</IntDir>
+    <TargetName>FtpUploaderTool</TargetName>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
   <ItemDefinitionGroup>
-    <ClCompile><WarningLevel>Level4</WarningLevel><PrecompiledHeader>NotUsing</PrecompiledHeader><PreprocessorDefinitions>WIN32;_WINDOWS;UNICODE;_UNICODE;WINVER=0x0501;_WIN32_WINNT=0x0501;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions><ExceptionHandling>Sync</ExceptionHandling><DebugInformationFormat>ProgramDatabase</DebugInformationFormat><AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
-    <Link><SubSystem>Windows</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>ws2_32.lib;crypt32.lib;shlwapi.lib;shell32.lib;ole32.lib;dbghelp.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies><MinimumRequiredVersion>5.01</MinimumRequiredVersion></Link>
-    <ResourceCompile><Culture>0x0804</Culture></ResourceCompile>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions Condition="'$(Platform)'=='Win32'">WIN32;_WINDOWS;UNICODE;_UNICODE;WINVER=0x0501;_WIN32_WINNT=0x0501;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Platform)'=='x64'">WIN32;_WINDOWS;UNICODE;_UNICODE;WINVER=0x0502;_WIN32_WINNT=0x0502;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>ws2_32.lib;crypt32.lib;shlwapi.lib;shell32.lib;ole32.lib;dbghelp.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <MinimumRequiredVersion Condition="'$(Platform)'=='Win32'">5.01</MinimumRequiredVersion>
+      <MinimumRequiredVersion Condition="'$(Platform)'=='x64'">5.02</MinimumRequiredVersion>
+    </Link>
+    <ResourceCompile>
+      <Culture>0x0804</Culture>
+    </ResourceCompile>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'"><ClCompile><Optimization>Disabled</Optimization><RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary><PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions><BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks></ClCompile></ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'"><ClCompile><Optimization>MaxSpeed</Optimization><RuntimeLibrary>MultiThreaded</RuntimeLibrary><PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions></ClCompile><Link><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences></Link></ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="Common.cpp" /><ClCompile Include="Config.cpp" /><ClCompile Include="FtpClient.cpp" /><ClCompile Include="Files.cpp" /><ClCompile Include="Logger.cpp" /><ClCompile Include="Worker.cpp" /><ClCompile Include="TaskEditDlg.cpp" /><ClCompile Include="FtpUploaderToolDlg.cpp" /><ClCompile Include="FtpUploaderTool.cpp" />
+    <ClCompile Include="Common.cpp" />
+    <ClCompile Include="Config.cpp" />
+    <ClCompile Include="FtpClient.cpp" />
+    <ClCompile Include="RemoteTemp.cpp" />
+    <ClCompile Include="Files.cpp" />
+    <ClCompile Include="Logger.cpp" />
+    <ClCompile Include="Worker.cpp" />
+    <ClCompile Include="TaskManager.cpp" />
+    <ClCompile Include="ConnectionTest.cpp" />
+    <ClCompile Include="DialogHelpers.cpp" />
+    <ClCompile Include="SettingsDlg.cpp" />
+    <ClCompile Include="TaskEditDlg.cpp" />
+    <ClCompile Include="FtpUploaderToolDlg.cpp" />
+    <ClCompile Include="FtpUploaderTool.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="stdafx.h" /><ClInclude Include="Common.h" /><ClInclude Include="Config.h" /><ClInclude Include="FtpClient.h" /><ClInclude Include="Files.h" /><ClInclude Include="Logger.h" /><ClInclude Include="Worker.h" /><ClInclude Include="TaskEditDlg.h" /><ClInclude Include="FtpUploaderToolDlg.h" /><ClInclude Include="FtpUploaderTool.h" /><ClInclude Include="resource.h" />
+    <ClInclude Include="stdafx.h" />
+    <ClInclude Include="Common.h" />
+    <ClInclude Include="Config.h" />
+    <ClInclude Include="FtpClient.h" />
+    <ClInclude Include="RemoteTemp.h" />
+    <ClInclude Include="Files.h" />
+    <ClInclude Include="Logger.h" />
+    <ClInclude Include="Worker.h" />
+    <ClInclude Include="TaskManager.h" />
+    <ClInclude Include="ConnectionTest.h" />
+    <ClInclude Include="DialogHelpers.h" />
+    <ClInclude Include="SettingsDlg.h" />
+    <ClInclude Include="ConfigLimits.h" />
+    <ClInclude Include="TaskEditDlg.h" />
+    <ClInclude Include="FtpUploaderToolDlg.h" />
+    <ClInclude Include="FtpUploaderTool.h" />
+    <ClInclude Include="resource.h" />
   </ItemGroup>
-  <ItemGroup><ResourceCompile Include="FtpUploaderTool.rc" /></ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="FtpUploaderTool.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="res\FtpUploaderTool.ico" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="源文件"><UniqueIdentifier>{F61722A0-679F-46A3-BE07-9421DFB885E9}</UniqueIdentifier><Extensions>cpp</Extensions></Filter>
@@ -12,4 +12,22 @@
     <ClInclude Include="stdafx.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Common.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Config.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="FtpClient.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Files.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Logger.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="Worker.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="TaskEditDlg.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="FtpUploaderToolDlg.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="FtpUploaderTool.h"><Filter>头文件</Filter></ClInclude><ClInclude Include="resource.h"><Filter>头文件</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup><ResourceCompile Include="FtpUploaderTool.rc"><Filter>资源文件</Filter></ResourceCompile></ItemGroup>
+  <ItemGroup><Image Include="res\FtpUploaderTool.ico"><Filter>资源文件</Filter></Image></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="RemoteTemp.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClInclude Include="RemoteTemp.h"><Filter>头文件</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ConnectionTest.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="DialogHelpers.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="SettingsDlg.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClInclude Include="ConnectionTest.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="DialogHelpers.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="SettingsDlg.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="ConfigLimits.h"><Filter>头文件</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="TaskManager.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClInclude Include="TaskManager.h"><Filter>头文件</Filter></ClInclude>
+  </ItemGroup>
 </Project>

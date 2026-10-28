@@ -9,9 +9,10 @@ ipch/
 *.aps
 FtpUploaderTool/Debug/
 FtpUploaderTool/Release/
-Tests/Debug/
-Tests/Release/
 Config/
 Data/
 Log/
 Dump/
+/FtpUploaderTool_Source_*.zip
+/FtpUploaderTool_Source_*/
+/性能测试_*/
