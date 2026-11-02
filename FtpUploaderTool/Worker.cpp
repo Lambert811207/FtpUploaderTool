@@ -179,7 +179,7 @@ int CTaskWorker::UploadOne(CFtpClient& ftpClientSession, CUploadHistory& history
         CRemoteTempFile tempRemote(m_strRoot, ftpClientSession, &m_loggerFile);
         // 临时路径必须先有持久化清理记录，才能开始向服务器写入。
         if (m_stConfig.m_bUseTempName && !tempRemote.Begin(m_stConfig, strRemoteDir, strUploadName))
-            return FE_LOCAL_READ;
+            return FE_TEMP_JOURNAL;
         nError = ftpClientSession.Upload(hInput.Get(), strUploadName, this);
         if (nError)
             return nError;
@@ -213,82 +213,152 @@ int CTaskWorker::UploadOne(CFtpClient& ftpClientSession, CUploadHistory& history
     }
     // 历史落盘失败不确认成功，避免执行本地删除后失去成功凭据。
     if (!historyUpload.Add(stFile))
-        return FE_LOCAL_READ;
+        return FE_HISTORY;
     return FE_OK;
 }
 
-// 只处理仍与上传快照相同的源文件，保留策略无需移动或删除。
-bool CTaskWorker::PostProcess(const PendingFile& stFile)
+// 读取失败原因；个别接口失败时未设置错误码，避免显示“操作成功”。
+static DWORD LastError()
 {
+    DWORD dwError = GetLastError();
+    return dwError ? dwError : ERROR_GEN_FAILURE;
+}
+
+// 第 1 次失败后等待 30 秒，此后逐次加倍，最长 10 分钟。
+static DWORD PostRetryDelay(UINT unFailures)
+{
+    if (!unFailures)
+        return 0;
+    return unFailures > 5 ? 600000 : min((DWORD)600000, (DWORD)30000 << (unFailures - 1));
+}
+
+// 只处理仍与上传快照相同的源文件，保留策略无需移动或删除。
+bool CTaskWorker::PostProcess(const PendingFile& stFile, int nAttempts, CString& strReason)
+{
+    strReason.Empty();
     if (m_stConfig.m_nPostAction == POST_KEEP)
         return true;
-    for (int nAttempt = 0; nAttempt < 3 && !Stopped(m_hStop); ++nAttempt)
+    for (int nAttempt = 0; nAttempt < nAttempts && !Stopped(m_hStop); ++nAttempt)
     {
-        PendingFile stCurrent;
-        if (!StatFile(m_stConfig.m_strLocalDir, stFile.m_strFullPath, stCurrent) || !stCurrent.Same(stFile))
-            return true;
-        bool bSuccess = false;
-        // 删除或移动前保持禁止写入的源文件句柄，避免处理期间文件被修改。
-        {
-            CAutoHandle hInput(CreateFileW(stFile.m_strFullPath, GENERIC_READ, FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-                                           FILE_FLAG_SEQUENTIAL_SCAN, NULL));
-            if (hInput.Valid() && StatFile(m_stConfig.m_strLocalDir, stFile.m_strFullPath, stCurrent) &&
-                stCurrent.Same(stFile))
-            {
-                if (m_stConfig.m_nPostAction != POST_MOVE)
-                    bSuccess = DeleteFileW(stFile.m_strFullPath) != FALSE;
-                else
-                {
-                    CString strDir = JoinPath(JoinPath(m_stConfig.m_strBackupDir, FileDate(stFile.m_ullModified, true)),
-                                              stFile.m_strSubDir);
-                    if (MakeDirs(strDir))
-                    {
-                        CString strDestination = JoinPath(strDir, stFile.m_strName);
-                        if (PathFileExistsW(strDestination))
-                            strDestination += L"_" + NewId();
-                        CString strTemp = strDestination + L".tmp";
-                        bool bCopied = true;
-                        CAutoHandle hOutput(
-                            CreateFileW(strTemp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL));
-                        if (!hOutput.Valid())
-                            bCopied = false;
-                        std::vector<BYTE> vecBuffer(65536);
-                        while (bCopied)
-                        {
-                            if (Stopped(m_hStop))
-                            {
-                                bCopied = false;
-                                break;
-                            }
-                            InterlockedExchange(&m_lBeat, (LONG)GetTickCount());
-                            DWORD dwRead = 0;
-                            if (!ReadFile(hInput.Get(), &vecBuffer[0], (DWORD)vecBuffer.size(), &dwRead, NULL))
-                            {
-                                bCopied = false;
-                                break;
-                            }
-                            if (!dwRead)
-                                break;
-                            bCopied = WriteBytes(hOutput.Get(), &vecBuffer[0], dwRead);
-                        }
-                        if (bCopied)
-                            bCopied = FlushFileBuffers(hOutput.Get()) != FALSE;
-                        hOutput.Close();
-                        // 备份复制并落盘、改名完成后，最后才删除本地源文件。
-                        if (bCopied && MoveFileExW(strTemp, strDestination, MOVEFILE_WRITE_THROUGH))
-                            bSuccess = DeleteFileW(stFile.m_strFullPath) != FALSE;
-                        else
-                            DeleteFileW(strTemp);
-                    }
-                }
-            }
-        }
-        if (bSuccess)
-            return true;
-        if (WaitForSingleObject(m_hStop, 500) == WAIT_OBJECT_0)
+        if (nAttempt && WaitForSingleObject(m_hStop, 500) == WAIT_OBJECT_0)
             return false;
+        if (PostOnce(stFile, strReason))
+            return true;
     }
     return false;
+}
+
+bool CTaskWorker::PostOnce(const PendingFile& stFile, CString& strReason)
+{
+    PendingFile stCurrent;
+    if (!StatFile(m_stConfig.m_strLocalDir, stFile.m_strFullPath, stCurrent) || !stCurrent.Same(stFile))
+        return true;
+    // 删除或移动前保持禁止写入的源文件句柄，避免处理期间文件被修改。
+    CAutoHandle hInput(CreateFileW(stFile.m_strFullPath, GENERIC_READ, FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                                   FILE_FLAG_SEQUENTIAL_SCAN, NULL));
+    if (!hInput.Valid())
+    {
+        strReason = L"无法独占打开源文件：" + WinError(LastError());
+        return false;
+    }
+    if (!StatFile(m_stConfig.m_strLocalDir, stFile.m_strFullPath, stCurrent) || !stCurrent.Same(stFile))
+        return true;
+    if (m_stConfig.m_nPostAction != POST_MOVE)
+    {
+        if (DeleteFileW(stFile.m_strFullPath))
+            return true;
+        strReason = L"删除源文件失败：" + WinError(LastError());
+        return false;
+    }
+    CString strDir =
+        JoinPath(JoinPath(m_stConfig.m_strBackupDir, FileDate(stFile.m_ullModified, true)), stFile.m_strSubDir);
+    if (!MakeDirs(strDir))
+    {
+        strReason = L"无法创建备份目录：" + strDir;
+        return false;
+    }
+    CString strDestination = JoinPath(strDir, stFile.m_strName);
+    if (PathFileExistsW(strDestination))
+        strDestination += L"_" + NewId();
+    // 同一分区直接改名，瞬间完成且不会产生半个文件；句柄允许删除共享，改名期间仍禁止写入。
+    if (MoveFileExW(stFile.m_strFullPath, strDestination, MOVEFILE_WRITE_THROUGH))
+        return true;
+    DWORD dwError = LastError();
+    if (dwError != ERROR_NOT_SAME_DEVICE)
+    {
+        strReason = L"移动到备份目录失败：" + WinError(dwError);
+        return false;
+    }
+    CString strTemp = strDestination + L".tmp";
+    CAutoHandle hOutput(CreateFileW(strTemp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL));
+    if (!hOutput.Valid())
+    {
+        strReason = L"无法创建备份临时文件：" + WinError(LastError());
+        return false;
+    }
+    bool bCopied = true;
+    std::vector<BYTE> vecBuffer(65536);
+    for (;;)
+    {
+        if (Stopped(m_hStop))
+        {
+            bCopied = false;
+            strReason = L"复制备份时收到停止请求";
+            break;
+        }
+        InterlockedExchange(&m_lBeat, (LONG)GetTickCount());
+        DWORD dwRead = 0;
+        if (!ReadFile(hInput.Get(), &vecBuffer[0], (DWORD)vecBuffer.size(), &dwRead, NULL))
+        {
+            bCopied = false;
+            strReason = L"读取源文件失败：" + WinError(LastError());
+            break;
+        }
+        if (!dwRead)
+            break;
+        if (!WriteBytes(hOutput.Get(), &vecBuffer[0], dwRead))
+        {
+            bCopied = false;
+            strReason = L"写入备份失败：" + WinError(LastError());
+            break;
+        }
+    }
+    if (bCopied && !FlushFileBuffers(hOutput.Get()))
+    {
+        bCopied = false;
+        strReason = L"备份落盘失败：" + WinError(LastError());
+    }
+    hOutput.Close();
+    // 跨分区时备份复制并落盘、改名完成后，最后才删除本地源文件。
+    if (bCopied && !MoveFileExW(strTemp, strDestination, MOVEFILE_WRITE_THROUGH))
+    {
+        bCopied = false;
+        strReason = L"备份改名失败：" + WinError(LastError());
+    }
+    if (!bCopied)
+    {
+        DeleteFileW(strTemp);
+        return false;
+    }
+    if (DeleteFileW(stFile.m_strFullPath))
+        return true;
+    // 源文件仍保持原样，撤销本次备份，避免每次重试都多留一份副本。
+    strReason = L"已复制备份但删除源文件失败：" + WinError(LastError());
+    DeleteFileW(strDestination);
+    return false;
+}
+
+void CTaskWorker::PostFailed(PostInfo& stPost, const CString& strReason)
+{
+    ++stPost.m_unFailures;
+    stPost.m_dwLastTick = GetTickCount();
+    if (stPost.m_unFailures & (stPost.m_unFailures - 1))
+        return;
+    CString strText;
+    strText.Format(L"上传已完成，后处理第 %u 次失败，%u 秒后重试：%s；原因=%s", stPost.m_unFailures,
+                   PostRetryDelay(stPost.m_unFailures) / 1000, (LPCWSTR)stPost.m_stFile.m_strRelative,
+                   (LPCWSTR)strReason);
+    m_loggerFile.Write(&m_stConfig, 2, strText);
 }
 
 // 每次启动重新读取历史；扫描、上传及后处理在本任务线程内串行执行。
@@ -308,14 +378,14 @@ void CTaskWorker::Run()
     // 记录单文件失败次数和暂停状态，扫描时移除已不存在的路径。
     std::map<CString, FailInfo> mapFails;
     // 已完成上传但仍需删除或备份的文件，处理成功或源文件变化后移除。
-    std::map<CString, PendingFile> mapPost;
+    std::map<CString, PostInfo> mapPost;
     UINT unWaitSec = 0;
     UINT unFailures = 0;
     DWORD dwFailTick = 0;
     DWORD dwLastScan = GetTickCount() - m_stConfig.m_unScanInterval * 1000;
     DWORD dwLastIo = GetTickCount();
     DWORD dwLastUpload = dwLastIo;
-    DWORD dwLastPost = dwLastIo - 30000;
+    DWORD dwLastPost = dwLastIo - 1000;
     DWORD dwLastLocalLog = dwLastIo - 600000;
     // 启动后立即检查一次，此后每小时清理，避免每次扫描都重复遍历删除。
     DWORD dwLastEmptyDirCleanup = dwLastIo - 3600000;
@@ -334,7 +404,6 @@ void CTaskWorker::Run()
         }
         if (TickElapsed(dwLastScan, m_stConfig.m_unScanInterval * 1000))
         {
-            dwLastScan = GetTickCount();
             if (!scannerDirectory.Scan(deqQueue, historyUpload, mapFails, mapPost, m_hStop))
             {
                 Error(L"本地目录不可访问");
@@ -349,17 +418,33 @@ void CTaskWorker::Run()
                 historyUpload.Compact(m_stConfig.m_strLocalDir);
                 strMaintenanceDay = strToday;
             }
+            // 扫描结束后再计时，扫描耗时超过间隔时仍为上传留出一个完整间隔。
+            dwLastScan = GetTickCount();
         }
-        if (TickElapsed(dwLastPost, 30000))
+        // 每秒检查到期的后处理，每轮最多占用约 2 秒，持续失败的文件按次数退避。
+        if (TickElapsed(dwLastPost, 1000))
         {
-            dwLastPost = GetTickCount();
-            for (std::map<CString, PendingFile>::iterator itI = mapPost.begin(); itI != mapPost.end();)
+            DWORD dwBatchStart = GetTickCount();
+            for (std::map<CString, PostInfo>::iterator itI = mapPost.begin();
+                 itI != mapPost.end() && !Stopped(m_hStop) && !TickElapsed(dwBatchStart, 2000);)
             {
-                if (PostProcess(itI->second))
+                PostInfo& stPost = itI->second;
+                if (!TickElapsed(stPost.m_dwLastTick, PostRetryDelay(stPost.m_unFailures)))
+                {
+                    ++itI;
+                    continue;
+                }
+                CString strReason;
+                if (PostProcess(stPost.m_stFile, 1, strReason))
                     mapPost.erase(itI++);
                 else
+                {
+                    if (!Stopped(m_hStop))
+                        PostFailed(stPost, strReason);
                     ++itI;
+                }
             }
+            dwLastPost = GetTickCount();
         }
         if (m_stConfig.m_bDeleteOldEmptyDirs && TickElapsed(dwLastEmptyDirCleanup, 3600000))
         {
@@ -408,7 +493,7 @@ void CTaskWorker::Run()
             nError = UploadOne(ftpClientSession, historyUpload, stFile, strRemote, strName);
             if (nError == FE_OK)
             {
-                mapPost[stFile.m_strFullPath] = stFile;
+                mapPost[stFile.m_strFullPath] = PostInfo(stFile);
                 scannerDirectory.Dequeued(stFile.m_strFullPath);
                 mapFails.erase(stFile.m_strFullPath);
                 dwLastIo = dwLastUpload = GetTickCount();
@@ -422,10 +507,12 @@ void CTaskWorker::Run()
                     m_stStatus.m_strLastOk = TimeText().Mid(11, 8);
                     m_stStatus.m_strLastError.Empty();
                 }
-                if (PostProcess(stFile))
+                // 上传后立即尝试 3 次，仍失败时交给后处理批次按退避间隔重试。
+                CString strReason;
+                if (PostProcess(stFile, 3, strReason))
                     mapPost.erase(stFile.m_strFullPath);
-                else
-                    m_loggerFile.Write(&m_stConfig, 2, L"上传已完成，后处理稍后重试：" + stFile.m_strRelative);
+                else if (!Stopped(m_hStop))
+                    PostFailed(mapPost[stFile.m_strFullPath], strReason);
                 nError = FE_OK;
             }
             // 网络故障将当前文件放回队首，进入重连流程，不增加单文件失败次数。
@@ -443,9 +530,8 @@ void CTaskWorker::Run()
                     FailInfo& stF = mapFails[stFile.m_strFullPath];
                     ++stF.m_unAttempts;
                     stF.m_dwLastTick = GetTickCount();
-                    stF.m_bParked =
-                        stF.m_unAttempts >= m_stConfig.m_unMaxFileRetry || nError == FE_REMOTE_EXISTS ||
-                        m_stConfig.m_nRemoteExist == EXIST_SKIP;
+                    // 只有达到失败上限或服务器已有同名文件才搁置，其他错误按失败上限重试。
+                    stF.m_bParked = stF.m_unAttempts >= m_stConfig.m_unMaxFileRetry || nError == FE_REMOTE_EXISTS;
                     CString strError = ftpClientSession.ErrorText(nError);
                     CString strText;
                     strText.Format(L"%s 第 %u 次失败%s：%s", (LPCWSTR)stFile.m_strRelative, stF.m_unAttempts,

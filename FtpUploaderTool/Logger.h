@@ -44,10 +44,30 @@ public:
     void PopUi(std::deque<LogItem>& deqItems);
 
 private:
+    // 单个 TXT 文件的写入及归档故障状态，只由日志线程访问。
+    struct FileState
+    {
+        DWORD m_dwWriteFailTick;
+        DWORD m_dwArchiveFailTick;
+        bool m_bWriteFailed;
+        bool m_bArchiveFailed;
+
+        FileState()
+            : m_dwWriteFailTick(0),
+              m_dwArchiveFailTick(0),
+              m_bWriteFailed(false),
+              m_bArchiveFailed(false)
+        {
+        }
+    };
+
     static unsigned __stdcall ThreadProc(void* pContext);
     void Run();
     void Push(const LogItem& stItem);
-    bool WriteItem(const LogItem& stItem, UINT& unDropped, const GlobalConfig& stConfig);
+    // 打开文件一次写入同一文件的一批日志，按大小在条目边界归档；unDropped 非 0 时先写丢弃提示。
+    bool WriteLines(const CString& strPath, const std::vector<CStringA>& vecLines, bool bFlush,
+                    const GlobalConfig& stConfig, FileState& stState, UINT& unDropped);
+    bool OpenLog(const CString& strPath, CAutoHandle& hFile, ULONGLONG& ullSize);
     bool Archive(const CString& strPath, UINT unArchiveCount);
     bool CleanupArchives(const GlobalConfig& stConfig);
     CCritSec m_csLock;

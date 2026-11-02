@@ -2,21 +2,29 @@
 #include "Files.h"
 #include "Logger.h"
 
-bool StatFile(const CString& strRoot, const CString& strPath, PendingFile& stFile)
+// 由完整路径拆分相对路径、文件名和子目录，并记录版本信息。
+static void FillPendingFile(const CString& strRoot, const CString& strPath, ULONGLONG ullSize, ULONGLONG ullModified,
+                            PendingFile& stFile)
 {
-    WIN32_FILE_ATTRIBUTE_DATA stData;
-    if (!GetFileAttributesExW(strPath, GetFileExInfoStandard, &stData) ||
-        stData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-        return false;
     stFile.m_strFullPath = strPath;
     stFile.m_strRelative = strPath.Mid(strRoot.GetLength());
     stFile.m_strRelative.TrimLeft(L"\\/");
     int nSlash = stFile.m_strRelative.ReverseFind(L'\\');
     stFile.m_strName = nSlash < 0 ? stFile.m_strRelative : stFile.m_strRelative.Mid(nSlash + 1);
     stFile.m_strSubDir = nSlash < 0 ? CString() : stFile.m_strRelative.Left(nSlash);
-    stFile.m_ullSize = ((ULONGLONG)stData.nFileSizeHigh << 32) | stData.nFileSizeLow;
-    stFile.m_ullModified =
-        ((ULONGLONG)stData.ftLastWriteTime.dwHighDateTime << 32) | stData.ftLastWriteTime.dwLowDateTime;
+    stFile.m_ullSize = ullSize;
+    stFile.m_ullModified = ullModified;
+}
+
+bool StatFile(const CString& strRoot, const CString& strPath, PendingFile& stFile)
+{
+    WIN32_FILE_ATTRIBUTE_DATA stData;
+    if (!GetFileAttributesExW(strPath, GetFileExInfoStandard, &stData) ||
+        stData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        return false;
+    FillPendingFile(strRoot, strPath, ((ULONGLONG)stData.nFileSizeHigh << 32) | stData.nFileSizeLow,
+                    ((ULONGLONG)stData.ftLastWriteTime.dwHighDateTime << 32) | stData.ftLastWriteTime.dwLowDateTime,
+                    stFile);
     return true;
 }
 
@@ -152,29 +160,47 @@ bool CUploadHistory::Compact(const CString& strRoot)
     return AtomicWrite(m_strPath, strAText);
 }
 
-bool CDirScanner::Match(const CString& strName, const CString& strMasks, bool bEmpty) const
+// 按分号切分并去除空白；仅含空白的分段保留为空串，与原逐段匹配的结果一致。
+static std::vector<CString> SplitMasks(const CString& strMasks)
 {
-    if (strMasks.IsEmpty())
-        return bEmpty;
+    std::vector<CString> vecMasks;
     int nStart = 0;
     CString strMask;
     while (!(strMask = strMasks.Tokenize(L";", nStart)).IsEmpty())
     {
         strMask.Trim();
-        if (PathMatchSpecW(strName, strMask))
-            return true;
+        vecMasks.push_back(strMask);
     }
+    return vecMasks;
+}
+
+CDirScanner::CDirScanner(const TaskConfig& stConfig)
+    : m_stConfig(stConfig),
+      m_vecIncludeMasks(SplitMasks(stConfig.m_strIncludeMask)),
+      m_vecExcludeMasks(SplitMasks(stConfig.m_strExcludeMask)),
+      m_bIncludeAll(stConfig.m_strIncludeMask.IsEmpty())
+{
+}
+
+bool CDirScanner::Match(LPCWSTR pszName, const std::vector<CString>& vecMasks) const
+{
+    for (size_t nIndex = 0; nIndex < vecMasks.size(); ++nIndex)
+        if (PathMatchSpecW(pszName, vecMasks[nIndex]))
+            return true;
     return false;
 }
 
 // 只遍历本地目录，跳过隐藏、系统和重解析项，子目录深度最多 10 层。
-void CDirScanner::Walk(const CString& strDirectory, int nDepth, std::vector<PendingFile>& vecFound, HANDLE hStop)
+// 目录枚举数据与上传历史一致时不再逐个查询元数据；其余文件读取精确值，避免正在写入的文件因目录项滞后被提前判稳。
+void CDirScanner::Walk(const CString& strDirectory, int nDepth, const CUploadHistory& historyUpload,
+                       std::vector<PendingFile>& vecUploaded, std::vector<PendingFile>& vecFound, HANDLE hStop)
 {
     WIN32_FIND_DATAW stFd;
     HANDLE hHandle = FindFirstFileW(JoinPath(strDirectory, L"*"), &stFd);
     if (hHandle == INVALID_HANDLE_VALUE)
         return;
     CFindHandle hFindFind(hHandle);
+    int nSuffixLength = m_stConfig.m_strTempSuffix.GetLength();
     do
     {
         if (Stopped(hStop))
@@ -183,22 +209,26 @@ void CDirScanner::Walk(const CString& strDirectory, int nDepth, std::vector<Pend
             continue;
         if (wcscmp(stFd.cFileName, L".") == 0 || wcscmp(stFd.cFileName, L"..") == 0)
             continue;
-        CString strPath = JoinPath(strDirectory, stFd.cFileName);
         if (stFd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
         {
             if (m_stConfig.m_bIncludeSubDir && nDepth < 10)
-                Walk(strPath, nDepth + 1, vecFound, hStop);
+                Walk(JoinPath(strDirectory, stFd.cFileName), nDepth + 1, historyUpload, vecUploaded, vecFound, hStop);
+            continue;
         }
-        else if (Match(stFd.cFileName, m_stConfig.m_strIncludeMask, true) &&
-                 !Match(stFd.cFileName, m_stConfig.m_strExcludeMask, false) &&
-                 (!m_stConfig.m_bUseTempName || CString(stFd.cFileName)
-                                                        .Right(m_stConfig.m_strTempSuffix.GetLength())
-                                                        .CompareNoCase(m_stConfig.m_strTempSuffix) != 0))
-        {
-            PendingFile stFile;
-            if (StatFile(m_stConfig.m_strLocalDir, strPath, stFile))
-                vecFound.push_back(stFile);
-        }
+        int nNameLength = (int)wcslen(stFd.cFileName);
+        if ((!m_bIncludeAll && !Match(stFd.cFileName, m_vecIncludeMasks)) || Match(stFd.cFileName, m_vecExcludeMasks) ||
+            (m_stConfig.m_bUseTempName &&
+             _wcsicmp(stFd.cFileName + max(0, nNameLength - nSuffixLength), m_stConfig.m_strTempSuffix) == 0))
+            continue;
+        CString strPath = JoinPath(strDirectory, stFd.cFileName);
+        PendingFile stFile;
+        FillPendingFile(m_stConfig.m_strLocalDir, strPath, ((ULONGLONG)stFd.nFileSizeHigh << 32) | stFd.nFileSizeLow,
+                        ((ULONGLONG)stFd.ftLastWriteTime.dwHighDateTime << 32) | stFd.ftLastWriteTime.dwLowDateTime,
+                        stFile);
+        if (historyUpload.Contains(stFile))
+            vecUploaded.push_back(stFile);
+        else if (StatFile(m_stConfig.m_strLocalDir, strPath, stFile))
+            vecFound.push_back(stFile);
     } while (FindNextFileW(hHandle, &stFd));
 }
 
@@ -335,36 +365,76 @@ void CDirScanner::CleanupEmptyDirs(CLogger& loggerFile, HANDLE hStop)
     loggerFile.Operation(L"清理旧空文件夹", strResult, &m_stConfig, unFailed ? 2 : 1);
 }
 
+// 已上传文件只补做未完成的本地删除/备份，保留策略直接跳过；已有记录时保留失败次数及退避时间。
+void CDirScanner::KeepUploaded(const PendingFile& stFile, std::map<CString, PostInfo>& mapPost)
+{
+    m_mapCandidates.erase(stFile.m_strFullPath);
+    if (m_stConfig.m_nPostAction == POST_KEEP)
+        return;
+    std::map<CString, PostInfo>::iterator itPost = mapPost.find(stFile.m_strFullPath);
+    if (itPost == mapPost.end())
+        mapPost[stFile.m_strFullPath] = PostInfo(stFile);
+    else if (!itPost->second.m_stFile.Same(stFile))
+        itPost->second = PostInfo(stFile);
+    else
+        itPost->second.m_bSeen = true;
+}
+
 // 依据稳定时间及历史记录生成有界队列，不在扫描线程中执行网络上传。
 bool CDirScanner::Scan(std::deque<PendingFile>& deqQueue, const CUploadHistory& historyUpload,
-                       std::map<CString, FailInfo>& mapFails, std::map<CString, PendingFile>& mapPost, HANDLE hStop)
+                       std::map<CString, FailInfo>& mapFails, std::map<CString, PostInfo>& mapPost, HANDLE hStop)
 {
     DWORD dwAttrs = GetFileAttributesW(m_stConfig.m_strLocalDir);
     if (dwAttrs == INVALID_FILE_ATTRIBUTES || !(dwAttrs & FILE_ATTRIBUTE_DIRECTORY))
         return false;
+    std::vector<PendingFile> vecUploaded;
     std::vector<PendingFile> vecFound;
     std::vector<PendingFile> vecReady;
-    Walk(m_stConfig.m_strLocalDir, 0, vecFound, hStop);
-    std::set<CString> setSeen;
+    Walk(m_stConfig.m_strLocalDir, 0, historyUpload, vecUploaded, vecFound, hStop);
+    // 取消时尚未遍历完整目录，不能据此移除未出现的记录。
+    if (Stopped(hStop))
+        return true;
     for (std::map<CString, Candidate>::iterator itI = m_mapCandidates.begin(); itI != m_mapCandidates.end(); ++itI)
         itI->second.m_bSeen = false;
+    for (std::map<CString, FailInfo>::iterator itI = mapFails.begin(); itI != mapFails.end(); ++itI)
+        itI->second.m_bSeen = false;
+    for (std::map<CString, PostInfo>::iterator itI = mapPost.begin(); itI != mapPost.end(); ++itI)
+        itI->second.m_bSeen = false;
+    for (size_t nResult = 0; nResult < vecUploaded.size(); ++nResult)
+    {
+        if (Stopped(hStop))
+            return true;
+        std::map<CString, FailInfo>::iterator itFailure = mapFails.find(vecUploaded[nResult].m_strFullPath);
+        if (itFailure != mapFails.end())
+            itFailure->second.m_bSeen = true;
+        KeepUploaded(vecUploaded[nResult], mapPost);
+    }
     for (size_t nResult = 0; nResult < vecFound.size(); ++nResult)
     {
         if (Stopped(hStop))
             return true;
         const PendingFile& stF = vecFound[nResult];
-        setSeen.insert(stF.m_strFullPath);
-        // 已上传文件只补做未完成的本地删除/备份，保留策略直接跳过。
+        std::map<CString, FailInfo>::iterator itFailure = mapFails.find(stF.m_strFullPath);
+        if (itFailure != mapFails.end())
+            itFailure->second.m_bSeen = true;
         if (historyUpload.Contains(stF))
         {
-            if (m_stConfig.m_nPostAction != POST_KEEP)
-                mapPost[stF.m_strFullPath] = stF;
-            m_mapCandidates.erase(stF.m_strFullPath);
+            KeepUploaded(stF, mapPost);
             continue;
         }
-        if (mapPost.count(stF.m_strFullPath) || m_setQueued.count(stF.m_strFullPath))
+        // 源文件在上传后又被修改，不再删除或备份，改为按新版本重新上传。
+        std::map<CString, PostInfo>::iterator itPost = mapPost.find(stF.m_strFullPath);
+        if (itPost != mapPost.end())
+        {
+            if (itPost->second.m_stFile.Same(stF))
+            {
+                itPost->second.m_bSeen = true;
+                continue;
+            }
+            mapPost.erase(itPost);
+        }
+        if (m_setQueued.count(stF.m_strFullPath))
             continue;
-        std::map<CString, FailInfo>::iterator itFailure = mapFails.find(stF.m_strFullPath);
         if (itFailure != mapFails.end() &&
             (itFailure->second.m_bParked || !TickElapsed(itFailure->second.m_dwLastTick, 30000)))
             continue;
@@ -397,8 +467,16 @@ bool CDirScanner::Scan(std::deque<PendingFile>& deqQueue, const CUploadHistory& 
     }
     for (std::map<CString, FailInfo>::iterator itI = mapFails.begin(); itI != mapFails.end();)
     {
-        if (!setSeen.count(itI->first))
+        if (!itI->second.m_bSeen)
             mapFails.erase(itI++);
+        else
+            ++itI;
+    }
+    // 源文件已不存在的待后处理记录直接移除，不必等到下次重试才发现。
+    for (std::map<CString, PostInfo>::iterator itI = mapPost.begin(); itI != mapPost.end();)
+    {
+        if (!itI->second.m_bSeen)
+            mapPost.erase(itI++);
         else
             ++itI;
     }

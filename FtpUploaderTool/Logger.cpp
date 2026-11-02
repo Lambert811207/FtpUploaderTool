@@ -160,22 +160,26 @@ static CString ArchivePath(const CString& strPath, UINT unNumber)
     return strArchive;
 }
 
-// 删除最旧归档并从大编号向后移动，backup1 始终是最新归档。
+// 从 backup1 起寻找第一个空位，只把空位之前的归档后移一格；全部占满时才删除最旧归档。
+// 中途改名失败会留下空位，下次从空位继续，避免重复删除尚未轮到的归档。
 bool CLogger::Archive(const CString& strPath, UINT unArchiveCount)
 {
-    CString strOldest = ArchivePath(strPath, unArchiveCount);
-    if (PathFileExistsW(strOldest) && !DeleteFileW(strOldest))
-        return false;
-    for (UINT unIndex = unArchiveCount; unIndex > 1; --unIndex)
+    UINT unGap = 1;
+    while (unGap <= unArchiveCount && PathFileExistsW(ArchivePath(strPath, unGap)))
+        ++unGap;
+    if (unGap > unArchiveCount)
     {
-        CString strSource = ArchivePath(strPath, unIndex - 1);
-        CString strTarget = ArchivePath(strPath, unIndex);
-        if (PathFileExistsW(strSource) &&
-            !MoveFileExW(strSource, strTarget, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        if (!DeleteFileW(ArchivePath(strPath, unArchiveCount)))
+            return false;
+        unGap = unArchiveCount;
+    }
+    for (UINT unIndex = unGap; unIndex > 1; --unIndex)
+    {
+        if (!MoveFileExW(ArchivePath(strPath, unIndex - 1), ArchivePath(strPath, unIndex),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
             return false;
     }
-    CString strNewest = ArchivePath(strPath, 1);
-    return MoveFileExW(strPath, strNewest, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    return MoveFileExW(strPath, ArchivePath(strPath, 1), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
 }
 
 // 设置减少归档数量后清除超额文件，只处理约定格式的日志归档。
@@ -208,69 +212,126 @@ bool CLogger::CleanupArchives(const GlobalConfig& stConfig)
     return bOk;
 }
 
-// 系统与各任务的 TXT 分别按大小轮转，任务文件名采用持久化编号。
-bool CLogger::WriteItem(const LogItem& stItem, UINT& unDropped, const GlobalConfig& stConfig)
+// 打开当前日志用于追加，空文件先写 UTF-8 BOM；目录缺失时才创建目录。
+bool CLogger::OpenLog(const CString& strPath, CAutoHandle& hFile, ULONGLONG& ullSize)
 {
-    if (!MakeDirs(m_strRoot))
-        return false;
-    CString strBase(L"SystemLog");
-    if (!stItem.m_strId.IsEmpty())
-        strBase.Format(L"Task%uLog", stItem.m_unTaskNumber);
-    CString strPath = JoinPath(m_strRoot, strBase + L".txt");
-    CStringA strALost;
-    if (unDropped)
+    for (int nAttempt = 0; nAttempt < 2; ++nAttempt)
     {
-        CString strLost;
-        strLost.Format(L"%s [WARN] 丢弃了 %u 条日志\r\n", (LPCWSTR)stItem.m_strTime, unDropped);
-        strALost = ToBytes(strLost);
-    }
-    LPCWSTR arrLevels[] = {L"DEBUG", L"INFO", L"WARN", L"ERROR"};
-    CString strText = stItem.m_strTime + L" [" + arrLevels[max(0, min(3, stItem.m_nLevel))] + L"] " +
-                      (stItem.m_strId.IsEmpty() ? CString() : L"[" + stItem.m_strName + L"] ") + stItem.m_strText;
-    CStringA strABytes = ToBytes(strText + L"\r\n");
-    WIN32_FILE_ATTRIBUTE_DATA stAttributes;
-    bool bExists = GetFileAttributesExW(strPath, GetFileExInfoStandard, &stAttributes) != FALSE;
-    ULONGLONG ullSize = bExists ? (((ULONGLONG)stAttributes.nFileSizeHigh << 32) | stAttributes.nFileSizeLow) : 0;
-    ULONGLONG ullLimit = (ULONGLONG)stConfig.m_unLogMaxSizeMb * 1024 * 1024;
-    ULONGLONG ullNext = strALost.GetLength() + strABytes.GetLength();
-    if (!bExists || !ullSize)
-        ullNext += 3;
-    if (bExists && ullSize && ullSize + ullNext > ullLimit)
-    {
-        if (!Archive(strPath, stConfig.m_unLogArchiveCount))
+        HANDLE hHandle = CreateFileW(strPath, FILE_APPEND_DATA | GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_ALWAYS,
+                                     FILE_ATTRIBUTE_NORMAL, NULL);
+        DWORD dwError = GetLastError();
+        hFile.Attach(hHandle);
+        if (hFile.Valid())
+            break;
+        if (nAttempt || dwError != ERROR_PATH_NOT_FOUND || !MakeDirs(m_strRoot))
             return false;
     }
-    CAutoHandle hFile(CreateFileW(strPath, FILE_APPEND_DATA | GENERIC_READ, FILE_SHARE_READ, NULL,
-                                 OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL));
-    if (!hFile.Valid())
-        return false;
     LARGE_INTEGER stSize;
     if (!GetFileSizeEx(hFile.Get(), &stSize))
         return false;
-    bool bOk = true;
-    if (!stSize.QuadPart)
+    ullSize = (ULONGLONG)stSize.QuadPart;
+    if (!ullSize)
     {
         static const BYTE szBom[] = {0xEF, 0xBB, 0xBF};
-        bOk = WriteBytes(hFile.Get(), szBom, sizeof(szBom));
+        if (!WriteBytes(hFile.Get(), szBom, sizeof(szBom)))
+            return false;
+        ullSize = sizeof(szBom);
     }
-    if (bOk && !strALost.IsEmpty())
-    {
-        bOk = WriteBytes(hFile.Get(), (LPCSTR)strALost, strALost.GetLength());
-        if (bOk)
-            unDropped = 0;
-    }
-    if (bOk)
-        bOk = WriteBytes(hFile.Get(), (LPCSTR)strABytes, strABytes.GetLength());
-    if (bOk && stItem.m_nLevel == 3)
-        bOk = FlushFileBuffers(hFile.Get()) != FALSE;
-    return bOk;
+    return true;
 }
 
-// 批量取队列后在锁外写盘，收到停止请求后继续排空已入队记录。
+// 一个文件每批只打开一次；归档失败时继续追加到当前文件（暂时超过大小上限），每分钟最多重试一次归档。
+bool CLogger::WriteLines(const CString& strPath, const std::vector<CStringA>& vecLines, bool bFlush,
+                         const GlobalConfig& stConfig, FileState& stState, UINT& unDropped)
+{
+    CAutoHandle hFile;
+    ULONGLONG ullSize = 0;
+    if (!OpenLog(strPath, hFile, ullSize))
+        return false;
+    ULONGLONG ullLimit = (ULONGLONG)stConfig.m_unLogMaxSizeMb * 1024 * 1024;
+    CStringA strAPending;
+    if (unDropped)
+    {
+        CString strLost;
+        strLost.Format(L"%s [WARN] 丢弃了 %u 条日志\r\n", (LPCWSTR)TimeText(), unDropped);
+        strAPending = ToBytes(strLost);
+    }
+    for (size_t nIndex = 0; nIndex < vecLines.size(); ++nIndex)
+    {
+        const CStringA& strALine = vecLines[nIndex];
+        ULONGLONG ullPending = (ULONGLONG)strAPending.GetLength();
+        // 只含 BOM 的文件不归档，避免产生空的 backup 文件。
+        if (ullSize + ullPending > 3 && ullSize + ullPending + strALine.GetLength() > ullLimit &&
+            (!stState.m_bArchiveFailed || TickElapsed(stState.m_dwArchiveFailTick, 60000)))
+        {
+            if (!strAPending.IsEmpty())
+            {
+                if (!WriteBytes(hFile.Get(), (LPCSTR)strAPending, strAPending.GetLength()))
+                    return false;
+                ullSize += ullPending;
+                strAPending.Empty();
+                unDropped = 0;
+            }
+            if (bFlush && !FlushFileBuffers(hFile.Get()))
+                return false;
+            hFile.Close();
+            if (Archive(strPath, stConfig.m_unLogArchiveCount))
+                stState.m_bArchiveFailed = false;
+            else
+            {
+                DWORD dwError = GetLastError();
+                stState.m_bArchiveFailed = true;
+                stState.m_dwArchiveFailTick = GetTickCount();
+                CString strWarn;
+                strWarn.Format(L"%s [WARN] 日志归档失败，继续写入当前文件，1 分钟后重试：%s\r\n",
+                               (LPCWSTR)TimeText(), (LPCWSTR)WinError(dwError));
+                strAPending = ToBytes(strWarn);
+            }
+            if (!OpenLog(strPath, hFile, ullSize))
+                return false;
+        }
+        strAPending += strALine;
+    }
+    if (!strAPending.IsEmpty() && !WriteBytes(hFile.Get(), (LPCSTR)strAPending, strAPending.GetLength()))
+        return false;
+    unDropped = 0;
+    return !bFlush || FlushFileBuffers(hFile.Get()) != FALSE;
+}
+
+// 系统日志使用 SystemLog.txt，任务日志文件名采用持久化编号。
+static CString LogFileName(const LogItem& stItem)
+{
+    CString strBase(L"SystemLog");
+    if (!stItem.m_strId.IsEmpty())
+        strBase.Format(L"Task%uLog", stItem.m_unTaskNumber);
+    return strBase + L".txt";
+}
+
+static CStringA LogLine(const LogItem& stItem)
+{
+    LPCWSTR arrLevels[] = {L"DEBUG", L"INFO", L"WARN", L"ERROR"};
+    CString strText = stItem.m_strTime + L" [" + arrLevels[max(0, min(3, stItem.m_nLevel))] + L"] " +
+                      (stItem.m_strId.IsEmpty() ? CString() : L"[" + stItem.m_strName + L"] ") + stItem.m_strText;
+    return ToBytes(strText + L"\r\n");
+}
+
+// 同一文件的一批日志，保持入队顺序。
+struct LogChunk
+{
+    std::vector<CStringA> m_vecLines;
+    bool m_bFlush;
+
+    LogChunk()
+        : m_bFlush(false)
+    {
+    }
+};
+
+// 批量取队列后在锁外按文件合并写盘，收到停止请求后继续排空已入队记录。
 void CLogger::Run()
 {
-    DWORD dwFailedTick = 0;
-    bool bDiskFailed = false;
+    // 故障按文件区分，一个文件不可写不影响其他任务和系统日志。
+    std::map<CString, FileState> mapStates;
     for (;;)
     {
         WaitForSingleObject(m_hWake, 200);
@@ -289,25 +350,42 @@ void CLogger::Run()
         }
         if (bSettingsChanged)
             CleanupArchives(stConfig);
+        std::map<CString, LogChunk> mapChunks;
         for (size_t nIndex = 0; nIndex < deqBatch.size(); ++nIndex)
         {
-            const LogItem& stItem = deqBatch[nIndex];
-            // 磁盘失败后一段时间内不反复尝试写入，累计丢失数量供恢复后提示。
-            if (bDiskFailed && !TickElapsed(dwFailedTick, 60000))
+            LogChunk& stChunk = mapChunks[JoinPath(m_strRoot, LogFileName(deqBatch[nIndex]))];
+            stChunk.m_vecLines.push_back(LogLine(deqBatch[nIndex]));
+            if (deqBatch[nIndex].m_nLevel == 3)
+                stChunk.m_bFlush = true;
+        }
+        // 队列溢出及写入失败的丢弃数量统一在系统日志中提示，提示写入成功后才清零。
+        CString strSystemPath = JoinPath(m_strRoot, L"SystemLog.txt");
+        if (unDropped)
+            mapChunks[strSystemPath];
+        for (std::map<CString, LogChunk>::iterator itI = mapChunks.begin(); itI != mapChunks.end(); ++itI)
+        {
+            FileState& stState = mapStates[itI->first];
+            UINT unLines = (UINT)itI->second.m_vecLines.size();
+            // 写入失败后该文件 60 秒内不再尝试，其他文件照常写入。
+            if (stState.m_bWriteFailed && !TickElapsed(stState.m_dwWriteFailTick, 60000))
             {
-                ++unDropped;
+                unDropped += unLines;
                 continue;
             }
-            bool bOk = WriteItem(stItem, unDropped, stConfig);
-            if (!bOk)
+            UINT unNotice = itI->first == strSystemPath ? unDropped : 0;
+            if (WriteLines(itI->first, itI->second.m_vecLines, itI->second.m_bFlush, stConfig, stState, unNotice))
             {
-                bDiskFailed = true;
-                dwFailedTick = GetTickCount();
-                ++unDropped;
+                stState.m_bWriteFailed = false;
+                if (itI->first == strSystemPath)
+                    unDropped = 0;
             }
             else
             {
-                bDiskFailed = false;
+                stState.m_bWriteFailed = true;
+                stState.m_dwWriteFailTick = GetTickCount();
+                if (itI->first == strSystemPath)
+                    unDropped = unNotice;
+                unDropped += unLines;
             }
         }
         if (unDropped)

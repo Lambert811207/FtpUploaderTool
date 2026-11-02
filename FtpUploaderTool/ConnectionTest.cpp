@@ -75,7 +75,7 @@ unsigned __stdcall CConnectionTest::ThreadProc(void* pContext)
                 SetFilePointer(hLocal.Get(), 0, NULL, FILE_BEGIN);
                 pTest->Result(L"正在测试上传/大小校验…");
                 if (!tempRemote.Begin(pTest->m_stConfig, RemoteDirectory(pTest->m_stConfig, stFile), strRemote))
-                    nError = FE_LOCAL_READ;
+                    nError = FE_TEMP_JOURNAL;
                 else
                     nError = ftpClientSession.Upload(hLocal.Get(), strRemote, NULL);
             }

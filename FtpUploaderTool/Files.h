@@ -37,11 +37,40 @@ struct FailInfo
     UINT m_unAttempts;
     DWORD m_dwLastTick;
     bool m_bParked;
+    // 扫描期间标记本轮仍存在，扫描结束后移除未出现的路径。
+    bool m_bSeen;
 
     FailInfo()
         : m_unAttempts(0),
           m_dwLastTick(0),
-          m_bParked(false)
+          m_bParked(false),
+          m_bSeen(false)
+    {
+    }
+};
+
+// 已上传但尚未完成删除或备份的文件，失败后按次数退避重试。
+struct PostInfo
+{
+    PendingFile m_stFile;
+    // 连续失败次数，源文件版本变化后重新计数。
+    UINT m_unFailures;
+    DWORD m_dwLastTick;
+    // 扫描期间标记本轮仍存在，扫描结束后移除未出现的路径。
+    bool m_bSeen;
+
+    PostInfo()
+        : m_unFailures(0),
+          m_dwLastTick(0),
+          m_bSeen(true)
+    {
+    }
+
+    explicit PostInfo(const PendingFile& stFile)
+        : m_stFile(stFile),
+          m_unFailures(0),
+          m_dwLastTick(0),
+          m_bSeen(true)
     {
     }
 };
@@ -68,14 +97,11 @@ private:
 class CDirScanner
 {
 public:
-    explicit CDirScanner(const TaskConfig& stConfig)
-        : m_stConfig(stConfig)
-    {
-    }
+    explicit CDirScanner(const TaskConfig& stConfig);
 
     // 更新候选文件及有界队列；已上传但未完成后处理的文件放入 mapPost。
     bool Scan(std::deque<PendingFile>& deqQueue, const CUploadHistory& historyUpload,
-              std::map<CString, FailInfo>& mapFails, std::map<CString, PendingFile>& mapPost, HANDLE hStop);
+              std::map<CString, FailInfo>& mapFails, std::map<CString, PostInfo>& mapPost, HANDLE hStop);
     // 按目录最后修改时间清理旧空子文件夹，始终保留监控根目录。
     void CleanupEmptyDirs(CLogger& loggerFile, HANDLE hStop);
 
@@ -94,11 +120,20 @@ private:
         bool m_bSeen;
     };
 
-    void Walk(const CString& strDirectory, int nDepth, std::vector<PendingFile>& vecFound, HANDLE hStop);
+    // 与上传历史一致的文件放入 vecUploaded，其余文件读取精确元数据后放入 vecFound。
+    void Walk(const CString& strDirectory, int nDepth, const CUploadHistory& historyUpload,
+              std::vector<PendingFile>& vecUploaded, std::vector<PendingFile>& vecFound, HANDLE hStop);
+    // 已上传的文件只补做删除或备份；已有记录且版本不同时按新版本重新计数。
+    void KeepUploaded(const PendingFile& stFile, std::map<CString, PostInfo>& mapPost);
     void CleanupDirectory(const CString& strDirectory, int nDepth, ULONGLONG ullCutoff,
                           CLogger& loggerFile, HANDLE hStop, UINT& unDeleted, UINT& unFailed);
-    bool Match(const CString& strName, const CString& strMasks, bool bEmpty) const;
+    bool Match(LPCWSTR pszName, const std::vector<CString>& vecMasks) const;
     TaskConfig m_stConfig;
+    // 构造时切分的文件名规则，避免每个文件重复切分规则串。
+    std::vector<CString> m_vecIncludeMasks;
+    std::vector<CString> m_vecExcludeMasks;
+    // 包含规则串为空时匹配全部文件名；非空但没有有效分段时不匹配任何文件，与原逐段匹配一致。
+    bool m_bIncludeAll;
     std::map<CString, Candidate> m_mapCandidates;
     // 防止扫描期间重复入队，文件出队时同步移除。
     std::set<CString> m_setQueued;

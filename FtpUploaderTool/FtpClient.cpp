@@ -54,10 +54,19 @@ CString FtpErrorText(int nError, int nReplyCode, int nWsaError)
         case FE_REMOTE_STATE_UNKNOWN:
             pszText = L"无法确认服务器目标文件状态，未上传，保留本地文件";
             break;
+        case FE_TEMP_JOURNAL:
+            pszText = L"无法写入远程临时文件清理记录，未上传，保留本地文件";
+            break;
+        case FE_HISTORY:
+            pszText = L"无法写入上传成功记录，不确认成功，保留本地文件";
+            break;
     }
     CString strResult(pszText);
     CString strExtra;
-    if (nReplyCode >= 400)
+    // 本地错误与上一条 FTP 应答无关，不附加可能过期的应答码。
+    bool bLocal = nError == FE_LOCAL_OPEN || nError == FE_LOCAL_READ || nError == FE_TEMP_JOURNAL ||
+                  nError == FE_HISTORY;
+    if (nReplyCode >= 400 && !bLocal)
     {
         strExtra.Format(L" (FTP %d)", nReplyCode);
         strResult += strExtra;
@@ -254,13 +263,104 @@ void CFtpSocket::Close(bool bAbort)
     m_sockSocket = INVALID_SOCKET;
 }
 
+// 解析线程与调用方共同持有引用；调用方超时或取消后放弃等待，最后一个引用释放时销毁。
+struct ResolveState
+{
+    volatile LONG m_lReferences;
+    CStringA m_strAHost;
+    CStringA m_strAPort;
+    CAutoHandle m_hDone;
+    sockaddr_in m_stAddress;
+    bool m_bResolved;
+
+    ResolveState(const CStringA& strAHost, const CStringA& strAPort)
+        : m_lReferences(1),
+          m_strAHost(strAHost),
+          m_strAPort(strAPort),
+          m_hDone(CreateEvent(NULL, TRUE, FALSE, NULL)),
+          m_bResolved(false)
+    {
+        ZeroMemory(&m_stAddress, sizeof(m_stAddress));
+    }
+
+    void Release()
+    {
+        if (InterlockedDecrement(&m_lReferences) == 0)
+            delete this;
+    }
+};
+
+static bool LookupAddress(const CStringA& strAHost, const CStringA& strAPort, int nFlags, sockaddr_in& stAddress)
+{
+    addrinfo stHints = {0};
+    addrinfo* pAddresses = NULL;
+    stHints.ai_flags = nFlags;
+    stHints.ai_family = AF_INET;
+    stHints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(strAHost, strAPort, &stHints, &pAddresses) != 0 || !pAddresses)
+        return false;
+    bool bFound = pAddresses->ai_addrlen >= sizeof(stAddress);
+    if (bFound)
+        stAddress = *(sockaddr_in*)pAddresses->ai_addr;
+    freeaddrinfo(pAddresses);
+    return bFound;
+}
+
+static unsigned __stdcall ResolveThread(void* pContext)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+    ResolveState* pState = (ResolveState*)pContext;
+    pState->m_bResolved = LookupAddress(pState->m_strAHost, pState->m_strAPort, 0, pState->m_stAddress);
+    SetEvent(pState->m_hDone.Get());
+    pState->Release();
+    return 0;
+}
+
+// IP 地址直接转换；域名在辅助线程解析，等待受停止事件及连接建立超时限制。
+static int ResolveAddress(const CString& strHost, UINT unPort, HANDLE hStop, DWORD dwTimeout, sockaddr_in& stAddress)
+{
+    CStringA strAHost = ToBytes(strHost, CP_ACP);
+    CStringA strAPort;
+    strAPort.Format("%u", unPort);
+    if (LookupAddress(strAHost, strAPort, AI_NUMERICHOST, stAddress))
+        return FE_OK;
+    ResolveState* pState = new ResolveState(strAHost, strAPort);
+    if (!pState->m_hDone.Valid())
+    {
+        pState->Release();
+        return FE_RESOLVE;
+    }
+    InterlockedIncrement(&pState->m_lReferences);
+    CAutoHandle hThread((HANDLE)_beginthreadex(NULL, 0, ResolveThread, pState, 0, NULL));
+    if (!hThread.Valid())
+    {
+        pState->Release();
+        pState->Release();
+        return FE_RESOLVE;
+    }
+    HANDLE arrHandles[] = {pState->m_hDone.Get(), hStop};
+    DWORD dwWait = WaitForMultipleObjects(hStop ? 2 : 1, arrHandles, FALSE, dwTimeout);
+    int nError = FE_RESOLVE;
+    if (dwWait == WAIT_OBJECT_0 + 1)
+        nError = FE_STOPPED;
+    else if (dwWait == WAIT_OBJECT_0 && pState->m_bResolved)
+    {
+        stAddress = pState->m_stAddress;
+        nError = FE_OK;
+    }
+    pState->Release();
+    return nError;
+}
+
 CFtpClient::CFtpClient(const TaskConfig& stConfig, HANDLE hStop)
     : m_stConfig(stConfig),
       m_hStop(hStop),
+      m_bResolved(false),
       m_unCodePage(stConfig.m_nEncoding == ENC_UTF8 ? CP_UTF8 : 936),
       m_nCode(0)
 {
     ZeroMemory(&m_stPeer, sizeof(m_stPeer));
+    ZeroMemory(&m_stResolved, sizeof(m_stResolved));
     m_ftpSocketControl.SetStop(hStop);
 }
 
@@ -387,17 +487,18 @@ int CFtpClient::Connect()
     Disconnect();
     m_nCode = 0;
     m_unCodePage = m_stConfig.m_nEncoding == ENC_UTF8 ? CP_UTF8 : 936;
-    addrinfo stHints = {0};
-    addrinfo* pAddresses = NULL;
-    stHints.ai_family = AF_INET;
-    stHints.ai_socktype = SOCK_STREAM;
-    CStringA strAHost = ToBytes(m_stConfig.m_strHost, CP_ACP);
-    CStringA strAPort;
-    strAPort.Format("%u", m_stConfig.m_unPort);
-    if (getaddrinfo(strAHost, strAPort, &stHints, &pAddresses) != 0 || !pAddresses)
-        return FE_RESOLVE;
-    m_stPeer = *(sockaddr_in*)pAddresses->ai_addr;
-    freeaddrinfo(pAddresses);
+    sockaddr_in stAddress;
+    int nResolve =
+        ResolveAddress(m_stConfig.m_strHost, m_stConfig.m_unPort, m_hStop, m_stConfig.m_unConnTimeout * 1000, stAddress);
+    if (nResolve == FE_OK)
+    {
+        m_stResolved = stAddress;
+        m_bResolved = true;
+    }
+    else if (nResolve != FE_RESOLVE || !m_bResolved)
+        return nResolve;
+    // 解析失败或超时时沿用上次成功的地址，连接失败仍按网络错误重连。
+    m_stPeer = m_stResolved;
     if (Stopped(m_hStop))
         return FE_STOPPED;
     int nError = m_ftpSocketControl.Connect(m_stPeer, m_stConfig.m_unConnTimeout * 1000);
@@ -675,9 +776,10 @@ int CFtpClient::Upload(HANDLE hFile, const CString& strName, IFtpProgress* pProg
             break;
         }
         DWORD dwRead = 0;
+        // 本地读取失败按单文件失败计数，不进入网络重连；下方断开后由工作线程重新连接。
         if (!ReadFile(hFile, &vecBytes[0], (DWORD)vecBytes.size(), &dwRead, NULL))
         {
-            nError = FE_SESSION;
+            nError = FE_LOCAL_READ;
             break;
         }
         if (dwRead == 0)

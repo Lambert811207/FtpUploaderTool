@@ -21,7 +21,11 @@ enum FtpError
     // 本地同名策略拒绝上传，与 FTP 权限错误分开记录。
     FE_REMOTE_EXISTS = -25,
     // 服务器缺少必要的目标状态查询能力时保留本地源文件。
-    FE_REMOTE_STATE_UNKNOWN = -26
+    FE_REMOTE_STATE_UNKNOWN = -26,
+    // 远程临时文件清理记录无法落盘，未开始上传。
+    FE_TEMP_JOURNAL = -27,
+    // 上传已完成但成功记录无法落盘，不确认成功，保留本地源文件。
+    FE_HISTORY = -28
 };
 
 // 会话级错误需要重建连接；主动停止不属于重连错误。
@@ -131,6 +135,9 @@ private:
     CString m_strReply;
     CString m_strCwd;
     sockaddr_in m_stPeer;
+    // 上次成功解析的服务器地址，解析失败或超时时用于尝试连接。
+    sockaddr_in m_stResolved;
+    bool m_bResolved;
     UINT m_unCodePage;
     int m_nCode;
     CFtpClient(const CFtpClient&);

@@ -87,7 +87,12 @@ private:
     void Error(const CString& strText);
     int UploadOne(CFtpClient& ftpClientSession, CUploadHistory& historyUpload, const PendingFile& stFile,
                   CString& strRemoteDir, CString& strFinalName);
-    bool PostProcess(const PendingFile& stFile);
+    // 最多尝试 nAttempts 次，两次之间等待 500 毫秒；失败原因通过 strReason 返回。
+    bool PostProcess(const PendingFile& stFile, int nAttempts, CString& strReason);
+    // 执行一次删除或备份；源文件已不存在或版本已变化时视为完成。
+    bool PostOnce(const PendingFile& stFile, CString& strReason);
+    // 累计后处理失败次数，并按 1、2、4、8… 次记录原因，避免持续失败时刷屏。
+    void PostFailed(PostInfo& stPost, const CString& strReason);
     TaskConfig m_stConfig;
     CString m_strRoot;
     CLogger& m_loggerFile;
