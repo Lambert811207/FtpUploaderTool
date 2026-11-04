@@ -66,14 +66,15 @@ int wmain(int argc, wchar_t** argv)
         if (!worker.Start())
             return 7;
         TaskStatus status;
+        UINT expectedUploads = wcscmp(argv[1], L"worker-multiple") == 0 ? 2 : 1;
         do
         {
             status = worker.Status();
-            if (status.m_unTodayOk || status.m_unTodayFail || status.m_unParked)
+            if (status.m_unTodayOk >= expectedUploads || status.m_unTodayFail || status.m_unParked)
                 break;
             Sleep(10);
         } while (!TickElapsed(started, 10000));
-        success = status.m_unTodayOk == 1;
+        success = status.m_unTodayOk == expectedUploads;
         description = status.m_strLastError;
         worker.RequestStop();
         while (!worker.PollStopped() && !TickElapsed(started, 12000))

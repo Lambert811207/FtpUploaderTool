@@ -99,7 +99,7 @@ public:
     int EnsureDirectory(const CString& strDirectory);
     // 准备完整目标目录后回到配置的固定目录，返回带尾斜杠的相对子路径。
     int PrepareUploadDirectory(const CString& strDirectory, CString& strRelativeDir);
-    // 将相对于登录目录的路径转换为绝对路径，供目录切换及持久化清理使用。
+    // 将相对于登录目录的路径转换为绝对路径，供路径比较及持久化清理使用。
     CString AbsoluteDirectory(const CString& strDirectory) const;
     // 返回文件大小；550 时大小保留 -1，命令不支持时 bSupported 为 false。
     int Size(const CString& strName, LONGLONG& llSize, bool& bSupported);
@@ -129,6 +129,8 @@ private:
     int DataConnection(CFtpSocket& ftpSocketData, SOCKET& sockListener);
     int MapError() const;
     int Expect(int nCode1, int nCode2 = 0) const;
+    // 相对目录配置始终按当前目录生成命令参数，不向服务器发送前导斜杠。
+    CString DirectoryArgument(const CString& strAbsolute) const;
     TaskConfig m_stConfig;
     HANDLE m_hStop;
     CFtpSocket m_ftpSocketControl;

@@ -615,7 +615,33 @@ CString CFtpClient::AbsoluteDirectory(const CString& strDirectory) const
     return strResult.IsEmpty() ? CString(L"/") : strResult;
 }
 
-// 使用绝对路径逐层检查/创建，不要求业务账号能进入 FTP 根目录。
+CString CFtpClient::DirectoryArgument(const CString& strAbsolute) const
+{
+    if (m_stConfig.m_strRemoteDir.Left(1) == L"/" || m_strCwd.IsEmpty())
+        return strAbsolute;
+    std::vector<CString> vecCurrent;
+    std::vector<CString> vecTarget;
+    int nStart = 0;
+    CString strPart;
+    while (!(strPart = m_strCwd.Tokenize(L"/", nStart)).IsEmpty())
+        vecCurrent.push_back(strPart);
+    nStart = 0;
+    while (!(strPart = strAbsolute.Tokenize(L"/", nStart)).IsEmpty())
+        vecTarget.push_back(strPart);
+    size_t nCommon = 0;
+    while (nCommon < vecCurrent.size() && nCommon < vecTarget.size() &&
+           vecCurrent[nCommon] == vecTarget[nCommon])
+        ++nCommon;
+    CString strResult;
+    for (size_t nIndex = nCommon; nIndex < vecCurrent.size(); ++nIndex)
+        strResult += L"../";
+    for (size_t nIndex = nCommon; nIndex < vecTarget.size(); ++nIndex)
+        strResult += vecTarget[nIndex] + L"/";
+    strResult.TrimRight(L'/');
+    return strResult.IsEmpty() ? CString(L".") : strResult;
+}
+
+// 逐层检查/创建，并保留绝对或相对命令语义；不额外进入 FTP 根目录。
 int CFtpClient::EnsureDirectory(const CString& strRequested)
 {
     CString strDirectory = AbsoluteDirectory(strRequested);
@@ -623,9 +649,7 @@ int CFtpClient::EnsureDirectory(const CString& strRequested)
         return FE_PROTOCOL;
     if (m_strCwd == strDirectory)
         return FE_OK;
-    // 初次从登录目录定位时保留用户填写的相对路径，后续使用已锚定的绝对路径。
-    int nError = Command(L"CWD " + (strRequested.Left(1) != L"/" && m_strCwd == m_strLoginDir
-                                        ? strRequested : strDirectory));
+    int nError = Command(L"CWD " + DirectoryArgument(strDirectory));
     if (nError)
         return nError;
     if (m_nCode == 250)
@@ -644,28 +668,31 @@ int CFtpClient::EnsureDirectory(const CString& strRequested)
         nStart = strPrefix.GetLength() + 1;
     else
         strPrefix.Empty();
-    m_strCwd.Empty();
     CString strPart;
     while (!(strPart = strDirectory.Tokenize(L"/", nStart)).IsEmpty())
     {
         strPrefix += L"/" + strPart;
-        nError = Command(L"CWD " + strPrefix);
+        nError = Command(L"CWD " + DirectoryArgument(strPrefix));
         if (nError)
             return nError;
         if (m_nCode == 250)
+        {
+            m_strCwd = strPrefix;
             continue;
+        }
         if (m_nCode != 550)
             return MapError();
-        nError = Command(L"MKD " + strPrefix);
+        nError = Command(L"MKD " + DirectoryArgument(strPrefix));
         if (nError)
             return nError;
         if (m_nCode != 257 && m_nCode != 250 && m_nCode != 550)
             return MapError();
-        nError = Command(L"CWD " + strPrefix);
+        nError = Command(L"CWD " + DirectoryArgument(strPrefix));
         if (nError)
             return nError;
         if ((nError = Expect(250)) != FE_OK)
             return nError;
+        m_strCwd = strPrefix;
     }
     m_strCwd = strDirectory;
     return FE_OK;
@@ -684,6 +711,12 @@ int CFtpClient::PrepareUploadDirectory(const CString& strDirectory, CString& str
         strBase = strBase.Left(strBase.ReverseFind(L'/') + 1);
     }
     strBase.TrimRight(L'/');
+    // 绝对模板没有固定前缀时，以展开后的首级目录为基准，避免要求根目录访问权限。
+    if (strBase.IsEmpty() && nPlaceholder >= 0 && m_stConfig.m_strRemoteDir.Left(1) == L"/")
+    {
+        int nSlash = strDirectory.Find(L'/', 1);
+        strBase = nSlash < 0 ? strDirectory : strDirectory.Left(nSlash);
+    }
     if (strBase.IsEmpty())
         strBase = m_stConfig.m_strRemoteDir.Left(1) == L"/" ? CString(L"/") : m_strLoginDir;
     CString strRequestedBase(strBase);

@@ -3,6 +3,7 @@
 python tests/test_ftp_compatibility.py
 """
 from pathlib import Path
+from datetime import datetime
 import os
 import posixpath
 import socket
@@ -48,6 +49,9 @@ class FTP(socketserver.StreamRequestHandler):
                 elif command in ("TYPE", "NOOP", "OPTS"):
                     reply("200 OK")
                 elif command == "CWD":
+                    if self.server.relative_only and argument.startswith("/"):
+                        reply("553 Absolute directory paths are not accepted")
+                        continue
                     if remote == "/" or remote == "/restricted" or remote == self.server.denied:
                         reply("550 Business account cannot enter " + remote)
                     elif remote in self.server.directories:
@@ -56,6 +60,9 @@ class FTP(socketserver.StreamRequestHandler):
                     else:
                         reply("550 Directory missing " + remote)
                 elif command == "MKD":
+                    if self.server.relative_only and argument.startswith("/"):
+                        reply("553 Absolute directory paths are not accepted")
+                        continue
                     if remote == self.server.denied or posixpath.dirname(remote) not in self.server.directories:
                         reply("550 Cannot create " + remote)
                     else:
@@ -163,6 +170,7 @@ class CompatibilityTests(unittest.TestCase):
         self.server.require_path = True
         self.server.race = self.server.no_size = self.server.reject_upload = self.server.deny_login = False
         self.server.denied = None
+        self.server.relative_only = False
         self.server.login_dir = "/"
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -319,6 +327,62 @@ class CompatibilityTests(unittest.TestCase):
         self.run_probe(base="{yyyy}/{MM}")
         self.assertEqual(len(self.server.files), 1)
         self.assertTrue(next(iter(self.server.files)).startswith("/home/business/"))
+
+    def assert_relative_directory_commands(self):
+        self.assertFalse(any(cmd in ("CWD", "MKD") and arg.startswith("/")
+                             for cmd, arg in self.server.commands))
+
+    def test_relative_only_server_creates_missing_base_and_nested_tree(self):
+        base = self.relative_server()
+        self.server.directories = {self.server.login_dir}
+        self.server.relative_only = True
+        self.run_probe(base=base, temp=True)
+        self.assertEqual(self.server.files, {self.server.login_dir + "/" + base + RELATIVE: CONTENT})
+        self.assert_relative_directory_commands()
+
+    def test_relative_only_server_uploads_multiple_existing_directories(self):
+        base = self.relative_server()
+        self.server.relative_only = True
+        second = "20261104/serial/DATA/second.csv"
+        source = self.root / "source" / second
+        source.parent.mkdir(parents=True)
+        source.write_bytes(CONTENT)
+        prefix = self.server.login_dir + "/" + base
+        self.server.directories.update({posixpath.dirname(prefix + RELATIVE),
+                                        posixpath.dirname(prefix + second)})
+        self.run_probe(mode="worker-multiple", base=base, temp=True)
+        self.assertEqual(self.server.files, {prefix + RELATIVE: CONTENT, prefix + second: CONTENT})
+        self.assert_relative_directory_commands()
+
+    def test_relative_only_connection_test_with_template(self):
+        base = self.relative_server()
+        self.server.relative_only = True
+        self.run_probe(mode="connection", base=base + "{yyyy}")
+        self.assertFalse(self.server.files)
+        self.assert_relative_directory_commands()
+
+    def test_relative_only_template_without_fixed_prefix(self):
+        self.server.login_dir = "/home/business"
+        self.server.directories = {self.server.login_dir}
+        self.server.relative_only = True
+        self.run_probe(base="{yyyy}/{MM}")
+        self.assertIn(CONTENT, self.server.files.values())
+        self.assert_relative_directory_commands()
+
+    def test_absolute_template_without_prefix_does_not_require_root_access(self):
+        year = "/" + str(datetime.now().year)
+        self.server.directories = {year, year + "/" + posixpath.dirname(RELATIVE)}
+        self.server.require_path = False
+        self.run_probe(base="/{yyyy}")
+        self.assertEqual(self.server.files, {year + "/" + RELATIVE: CONTENT})
+        self.assertFalse(any(cmd == "CWD" and arg == "/" for cmd, arg in self.server.commands))
+
+    def test_absolute_template_connection_does_not_require_root_access(self):
+        self.server.directories = {"/" + str(datetime.now().year)}
+        self.server.require_path = False
+        self.run_probe(mode="connection", base="/{yyyy}")
+        self.assertFalse(self.server.files)
+        self.assertFalse(any(cmd == "CWD" and arg == "/" for cmd, arg in self.server.commands))
 
 
 if __name__ == "__main__":
