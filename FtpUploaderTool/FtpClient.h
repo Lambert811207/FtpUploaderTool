@@ -97,6 +97,10 @@ public:
     int Connect();
     int Noop();
     int EnsureDirectory(const CString& strDirectory);
+    // 准备完整目标目录后回到配置的固定目录，返回带尾斜杠的相对子路径。
+    int PrepareUploadDirectory(const CString& strDirectory, CString& strRelativeDir);
+    // 将相对于登录目录的路径转换为绝对路径，供目录切换及持久化清理使用。
+    CString AbsoluteDirectory(const CString& strDirectory) const;
     // 返回文件大小；550 时大小保留 -1，命令不支持时 bSupported 为 false。
     int Size(const CString& strName, LONGLONG& llSize, bool& bSupported);
     int Upload(HANDLE hFile, const CString& strName, IFtpProgress* pProgress);
@@ -116,10 +120,7 @@ public:
         return m_nCode;
     }
 
-    CString ErrorText(int nError) const
-    {
-        return FtpErrorText(nError, m_nCode, m_ftpSocketControl.WsaError());
-    }
+    CString ErrorText(int nError) const;
 
 private:
     int Command(const CString& strCommand);
@@ -133,7 +134,10 @@ private:
     CFtpSocket m_ftpSocketControl;
     CStringA m_strABuffer;
     CString m_strReply;
+    // 仅保留脱敏命令，用于错误诊断；不记录登录凭据。
+    CString m_strCommand;
     CString m_strCwd;
+    CString m_strLoginDir;
     sockaddr_in m_stPeer;
     // 上次成功解析的服务器地址，解析失败或超时时用于尝试连接。
     sockaddr_in m_stResolved;

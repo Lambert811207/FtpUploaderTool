@@ -51,10 +51,12 @@ unsigned __stdcall CConnectionTest::ThreadProc(void* pContext)
         FILETIME stFileTime;
         GetSystemTimeAsFileTime(&stFileTime);
         stFile.m_ullModified = ((ULONGLONG)stFileTime.dwHighDateTime << 32) | stFileTime.dwLowDateTime;
+        CString strRelativeDir;
+        CString strDirectory = RemoteDirectory(pTest->m_stConfig, stFile);
         if (!nError)
         {
             pTest->Result(L"正在进入/创建远程目录…");
-            nError = ftpClientSession.EnsureDirectory(RemoteDirectory(pTest->m_stConfig, stFile));
+            nError = ftpClientSession.PrepareUploadDirectory(strDirectory, strRelativeDir);
         }
         CString strPath;
         WCHAR szTemp[MAX_PATH] = {0};
@@ -74,22 +76,22 @@ unsigned __stdcall CConnectionTest::ThreadProc(void* pContext)
             {
                 SetFilePointer(hLocal.Get(), 0, NULL, FILE_BEGIN);
                 pTest->Result(L"正在测试上传/大小校验…");
-                if (!tempRemote.Begin(pTest->m_stConfig, RemoteDirectory(pTest->m_stConfig, stFile), strRemote))
+                if (!tempRemote.Begin(pTest->m_stConfig, strDirectory, strRemote))
                     nError = FE_TEMP_JOURNAL;
                 else
-                    nError = ftpClientSession.Upload(hLocal.Get(), strRemote, NULL);
+                    nError = ftpClientSession.Upload(hLocal.Get(), strRelativeDir + strRemote, NULL);
             }
             if (!nError)
             {
                 LONGLONG llSize;
                 bool bSupported;
-                nError = ftpClientSession.Size(strRemote, llSize, bSupported);
+                nError = ftpClientSession.Size(strRelativeDir + strRemote, llSize, bSupported);
                 if (!nError && bSupported && llSize != 16)
                     nError = FE_VERIFY;
             }
             if (!nError)
             {
-                nError = ftpClientSession.Delete(strRemote);
+                nError = ftpClientSession.Delete(strRelativeDir + strRemote);
                 if (!nError && ftpClientSession.LastCode() == 250)
                     tempRemote.Commit();
             }

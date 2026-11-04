@@ -137,12 +137,13 @@ int CTaskWorker::UploadOne(CFtpClient& ftpClientSession, CUploadHistory& history
     }
     strRemoteDir = RemoteDirectory(m_stConfig, stFile);
     strFinalName = stFile.m_strName;
-    int nError = ftpClientSession.EnsureDirectory(strRemoteDir);
+    CString strRelativeDir;
+    int nError = ftpClientSession.PrepareUploadDirectory(strRemoteDir, strRelativeDir);
     if (nError)
         return nError;
     LONGLONG llSize = -1;
     bool bSupported;
-    nError = ftpClientSession.Size(strFinalName, llSize, bSupported);
+    nError = ftpClientSession.Size(strRelativeDir + strFinalName, llSize, bSupported);
     if (nError)
         return nError;
     // 无法检查同名状态时，不冒险执行可能覆盖文件的非覆盖策略。
@@ -161,7 +162,7 @@ int CTaskWorker::UploadOne(CFtpClient& ftpClientSession, CUploadHistory& history
             strFinalName = nDot < 0 ? stFile.m_strName + strSuffix
                                     : stFile.m_strName.Left(nDot) + strSuffix + stFile.m_strName.Mid(nDot);
             LONGLONG llRenamed;
-            nError = ftpClientSession.Size(strFinalName, llRenamed, bSupported);
+            nError = ftpClientSession.Size(strRelativeDir + strFinalName, llRenamed, bSupported);
             if (nError)
                 return nError;
             if (!bSupported)
@@ -180,18 +181,18 @@ int CTaskWorker::UploadOne(CFtpClient& ftpClientSession, CUploadHistory& history
         // 临时路径必须先有持久化清理记录，才能开始向服务器写入。
         if (m_stConfig.m_bUseTempName && !tempRemote.Begin(m_stConfig, strRemoteDir, strUploadName))
             return FE_TEMP_JOURNAL;
-        nError = ftpClientSession.Upload(hInput.Get(), strUploadName, this);
+        nError = ftpClientSession.Upload(hInput.Get(), strRelativeDir + strUploadName, this);
         if (nError)
             return nError;
         if (m_stConfig.m_bVerifySize)
         {
             LONGLONG llUploaded;
-            nError = ftpClientSession.Size(strUploadName, llUploaded, bSupported);
+            nError = ftpClientSession.Size(strRelativeDir + strUploadName, llUploaded, bSupported);
             if (nError)
                 return nError;
             if (bSupported && (llUploaded < 0 || (ULONGLONG)llUploaded != stFile.m_ullSize))
             {
-                nError = ftpClientSession.Delete(strUploadName);
+                nError = ftpClientSession.Delete(strRelativeDir + strUploadName);
                 return IsSessionError(nError) || nError == FE_STOPPED ? nError : FE_VERIFY;
             }
             if (!bSupported)
@@ -199,12 +200,12 @@ int CTaskWorker::UploadOne(CFtpClient& ftpClientSession, CUploadHistory& history
         }
         if (m_stConfig.m_bUseTempName)
         {
-            nError = ftpClientSession.Rename(strUploadName, strFinalName);
+            nError = ftpClientSession.Rename(strRelativeDir + strUploadName, strRelativeDir + strFinalName);
             if (nError == FE_FILE_PERM && llSize >= 0 && m_stConfig.m_nRemoteExist == EXIST_OVERWRITE)
             {
-                nError = ftpClientSession.Delete(strFinalName);
+                nError = ftpClientSession.Delete(strRelativeDir + strFinalName);
                 if (!nError)
-                    nError = ftpClientSession.Rename(strUploadName, strFinalName);
+                    nError = ftpClientSession.Rename(strRelativeDir + strUploadName, strRelativeDir + strFinalName);
             }
             if (nError)
                 return nError;
@@ -385,6 +386,9 @@ void CTaskWorker::Run()
     DWORD dwLastScan = GetTickCount() - m_stConfig.m_unScanInterval * 1000;
     DWORD dwLastIo = GetTickCount();
     DWORD dwLastUpload = dwLastIo;
+    DWORD dwLastFileEnd = 0;
+    // 首个文件立即上传；间隔到期后清除此标记，避免长期空闲后计时回绕。
+    bool bUploadDelayPending = false;
     DWORD dwLastPost = dwLastIo - 1000;
     DWORD dwLastLocalLog = dwLastIo - 600000;
     // 启动后立即检查一次，此后每小时清理，避免每次扫描都重复遍历删除。
@@ -460,6 +464,16 @@ void CTaskWorker::Run()
             m_stStatus.m_unPending = (UINT)(deqQueue.size() + mapPost.size());
             m_stStatus.m_unParked = unParked;
         }
+        DWORD dwFileElapsed = GetTickCount() - dwLastFileEnd;
+        if (bUploadDelayPending && dwFileElapsed >= m_stConfig.m_unUploadIntervalMs)
+            bUploadDelayPending = false;
+        if (bUploadDelayPending && !deqQueue.empty() && ftpClientSession.Connected())
+        {
+            DWORD dwRemaining = m_stConfig.m_unUploadIntervalMs - dwFileElapsed;
+            CString strText;
+            strText.Format(L"等待上传，%u 毫秒后继续", dwRemaining);
+            State(CS_IDLE, strText);
+        }
         int nError = FE_OK;
         if (!ftpClientSession.Connected())
         {
@@ -483,7 +497,7 @@ void CTaskWorker::Run()
                 State(CS_RECONNECT, strText);
             }
         }
-        else if (!deqQueue.empty())
+        else if (!deqQueue.empty() && !bUploadDelayPending)
         {
             PendingFile stFile = deqQueue.front();
             deqQueue.pop_front();
@@ -491,6 +505,9 @@ void CTaskWorker::Run()
             CString strName;
             DWORD dwStart = GetTickCount();
             nError = UploadOne(ftpClientSession, historyUpload, stFile, strRemote, strName);
+            // 成功或失败都从本次尝试结束计时；扫描、保活及后处理耗时计入间隔。
+            dwLastFileEnd = GetTickCount();
+            bUploadDelayPending = m_stConfig.m_unUploadIntervalMs != 0;
             if (nError == FE_OK)
             {
                 mapPost[stFile.m_strFullPath] = PostInfo(stFile);
@@ -557,7 +574,8 @@ void CTaskWorker::Run()
                 continue;
             }
         }
-        else if (m_stConfig.m_unIdleDisconn && TickElapsed(dwLastUpload, m_stConfig.m_unIdleDisconn * 1000))
+        else if (deqQueue.empty() && m_stConfig.m_unIdleDisconn &&
+                 TickElapsed(dwLastUpload, m_stConfig.m_unIdleDisconn * 1000))
         {
             ftpClientSession.Disconnect();
             State(CS_IDLE, L"空闲，已断开");
@@ -593,6 +611,15 @@ void CTaskWorker::Run()
             strText.Format(L"%s；第 %u 次失败，%u 秒后重连", (LPCWSTR)strError, unFailures, unWaitSec);
             m_loggerFile.Write(&m_stConfig, 3, strText);
         }
-        WaitForSingleObject(m_hStop, 200);
+        // 最后一段按剩余毫秒数等待，避免短间隔被固定的 200 毫秒轮询放大。
+        DWORD dwLoopWait = 200;
+        if (bUploadDelayPending && !deqQueue.empty() && ftpClientSession.Connected())
+        {
+            DWORD dwElapsed = GetTickCount() - dwLastFileEnd;
+            dwLoopWait = dwElapsed >= m_stConfig.m_unUploadIntervalMs
+                             ? 0
+                             : min(dwLoopWait, m_stConfig.m_unUploadIntervalMs - dwElapsed);
+        }
+        WaitForSingleObject(m_hStop, dwLoopWait);
     }
 }

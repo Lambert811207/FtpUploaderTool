@@ -68,6 +68,7 @@ BOOL CTaskEditDlg::OnInitDialog()
     BIND_TEXT(IDC_EDIT_TEMP_FILENAME_SUFFIX, m_strTempSuffix);
     NUMBER(IDC_EDIT_FTP_SERVER_PORT, m_unPort);
     NUMBER(IDC_EDIT_SCAN_INTERVAL_SEC, m_unScanInterval);
+    NUMBER(IDC_EDIT_FILE_UPLOAD_INTERVAL_MS, m_unUploadIntervalMs);
     NUMBER(IDC_EDIT_PREUPLOAD_UNCHANGED_SEC, m_unStableSec);
     NUMBER(IDC_EDIT_FILE_FAILURE_LIMIT, m_unMaxFileRetry);
     NUMBER(IDC_EDIT_EMPTY_DIR_AGE_DAYS, m_unEmptyDirAgeDays);
@@ -106,7 +107,7 @@ BOOL CTaskEditDlg::OnInitDialog()
                     L"服务器路径和文件名使用的编码，不转换文件内容。自动模式在服务器声明支持 UTF-8 时使用 UTF-8，否则使用 GBK。");
     AddParameterTip(m_toolTip, this, IDC_EDIT_LOCAL_WATCH_DIR, L"本机需要监控并上传文件的目录；扫描范围和文件名规则在“本地扫描及清理”中设置。");
     AddParameterTip(m_toolTip, this, IDC_BTN_BROWSE_LOCAL_WATCH_DIR, L"选择本地监控目录。");
-    AddParameterTip(m_toolTip, this, IDC_EDIT_SERVER_UPLOAD_DIR, L"FTP 服务器上的上传目录，需以 / 开头。可用 {yyyy} 年、{MM} 月、{dd} 日、{HH} 时、{sub} 子目录和 {pc} 本机名；日期取源文件最后修改时间。");
+    AddParameterTip(m_toolTip, this, IDC_EDIT_SERVER_UPLOAD_DIR, L"FTP 服务器上的上传目录。不以 / 开头（如 IT_Display/ASY/TA200/123）表示相对于 FTP 登录目录；以 / 开头表示从 FTP 根目录定位。可用 {yyyy} 年、{MM} 月、{dd} 日、{HH} 时、{sub} 子目录和 {pc} 本机名；日期取源文件最后修改时间。");
     AddParameterTip(m_toolTip, this, IDC_CHK_SCAN_LOCAL_SUBDIRECTORIES, L"扫描本地目录：勾选后同时处理本地监控目录下的子文件夹；未勾选只处理本地监控目录当前这一层的文件，不扫描服务器目录。");
     AddParameterTip(m_toolTip, this, IDC_CHK_DELETE_OLD_EMPTY_DIRS,
                     L"任务运行时，删除本地监控目录内最后修改时间超过指定天数且当前为空的子文件夹，最多检查 10 层；启动后检查一次，此后每小时检查。独立于上传扫描范围，保留根目录，跳过隐藏、系统及链接目录。默认关闭。");
@@ -115,6 +116,8 @@ BOOL CTaskEditDlg::OnInitDialog()
     AddParameterTip(m_toolTip, this, IDC_EDIT_UPLOAD_FILENAME_MASK, L"扫描时允许处理的文件名通配符，例如 *.jpg;*.png；多个规则用分号分隔。为空或填写 * 都表示包含全部文件，仍受排除规则等扫描条件限制。");
     AddParameterTip(m_toolTip, this, IDC_EDIT_SKIP_FILENAME_MASK, L"扫描时忽略的文件名通配符，例如 *.tmp;*.part；多个规则用分号分隔。为空表示不按此项排除文件。");
     AddParameterTip(m_toolTip, this, IDC_EDIT_SCAN_INTERVAL_SEC, L"多久重新扫描一次本地目录，单位为秒；每次扫描应用子文件夹和文件名规则。不改变自动删除旧空文件夹的每小时间隔。");
+    AddParameterTip(m_toolTip, this, IDC_EDIT_FILE_UPLOAD_INTERVAL_MS,
+                    L"上一个文件上传尝试结束后，至少等待多少毫秒才开始下一个文件，范围为 0–86400000 毫秒（1000 毫秒 = 1 秒）。0 表示连续上传；首个文件无需等待。等待期间仍扫描目录、检查连接，也可立即停止任务。失败重试同样遵守此间隔。");
     AddParameterTip(m_toolTip, this, IDC_EDIT_PREUPLOAD_UNCHANGED_SEC, L"上传前，文件大小和最后修改时间必须连续保持不变的秒数。例如填 3，连续 3 秒未变化才允许上传；文件发生变化会重新等待。");
     AddParameterTip(m_toolTip, this, IDC_EDIT_FILE_FAILURE_LIMIT,
                     L"“文件上传及处理”中的单文件失败次数上限，包含首次可计数失败。达到后暂停该文件，停止并重新启动任务可再试；网络中断由“连接维护及重连”处理，不占用此次数。");
@@ -189,6 +192,7 @@ bool CTaskEditDlg::ReadConfig(TaskConfig& stConfig)
     BIND_TEXT(IDC_EDIT_TEMP_FILENAME_SUFFIX, m_strTempSuffix);
     NUMBER(IDC_EDIT_FTP_SERVER_PORT, m_unPort);
     NUMBER(IDC_EDIT_SCAN_INTERVAL_SEC, m_unScanInterval);
+    NUMBER(IDC_EDIT_FILE_UPLOAD_INTERVAL_MS, m_unUploadIntervalMs);
     NUMBER(IDC_EDIT_PREUPLOAD_UNCHANGED_SEC, m_unStableSec);
     NUMBER(IDC_EDIT_FILE_FAILURE_LIMIT, m_unMaxFileRetry);
     NUMBER(IDC_EDIT_CONNECTION_ESTABLISH_TIMEOUT, m_unConnTimeout);
@@ -217,8 +221,6 @@ bool CTaskEditDlg::ReadConfig(TaskConfig& stConfig)
     stConfig.m_strBackupDir.Trim();
     stConfig.m_strRemoteDir.Replace(L'\\', L'/');
     stConfig.m_strRemoteDir.Trim();
-    if (stConfig.m_strRemoteDir.Left(1) != L"/")
-        stConfig.m_strRemoteDir = L"/" + stConfig.m_strRemoteDir;
     if (stConfig.m_strRemoteDir.GetLength() > 1)
         stConfig.m_strRemoteDir.TrimRight(L"/");
     CString strMessage;
