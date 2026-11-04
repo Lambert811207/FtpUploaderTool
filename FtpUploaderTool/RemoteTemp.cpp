@@ -89,7 +89,10 @@ CRemoteTempFile::~CRemoteTempFile()
 bool CRemoteTempFile::Begin(const TaskConfig& stConfig, const CString& strDirectory, const CString& strName)
 {
     m_stConfig = stConfig;
-    m_strRemotePath = strDirectory + (strDirectory.Right(1) == L"/" ? L"" : L"/") + strName;
+    CString strAbsoluteDir = m_ftpSession.AbsoluteDirectory(strDirectory);
+    if (strAbsoluteDir.IsEmpty())
+        return false;
+    m_strRemotePath = strAbsoluteDir + (strAbsoluteDir.Right(1) == L"/" ? L"" : L"/") + strName;
     CString strKey = TempKey(stConfig, m_strRemotePath);
     if (!ClaimTemp(strKey))
         return false;

@@ -41,7 +41,7 @@ struct TaskConfig
     CString m_strPassword;
     // 本地监控目录，必须为绝对路径。
     CString m_strLocalDir;
-    // 服务器上传目录，可包含文件时间及相对子目录占位符。
+    // 服务器上传目录，可包含占位符；无前导 / 时相对于 FTP 登录目录。
     CString m_strRemoteDir;
     // 仅移动策略使用的本地备份根目录，不按天数自动删除。
     CString m_strBackupDir;
@@ -70,6 +70,8 @@ struct TaskConfig
     UINT m_unPort;
     // 重新扫描本地目录的间隔，单位为秒。
     UINT m_unScanInterval;
+    // 上一次文件上传尝试结束到下一次开始的最短间隔，单位为毫秒，0 表示连续上传。
+    UINT m_unUploadIntervalMs;
     // 文件大小及修改时间连续不变后才允许上传，单位为秒。
     UINT m_unStableSec;
     // 单文件可计数失败上限，包含首次失败，网络重连不占用此计数。

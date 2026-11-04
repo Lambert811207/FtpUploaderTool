@@ -19,6 +19,7 @@ TaskConfig::TaskConfig()
       m_unTaskNumber(0),
       m_unPort(21),
       m_unScanInterval(2),
+      m_unUploadIntervalMs(0),
       m_unStableSec(3),
       m_unMaxFileRetry(5),
       m_unEmptyDirAgeDays(7),
@@ -55,9 +56,9 @@ bool TaskConfig::Validate(CString& strMessage) const
         strMessage = L"FTP 端口必须为 1–65535";
     else if (m_strLocalDir.IsEmpty() || PathIsRelativeW(m_strLocalDir))
         strMessage = L"本地监控目录必须为绝对路径";
-    else if (m_strRemoteDir.IsEmpty() || m_strRemoteDir[0] != L'/' || Unsafe(m_strRemoteDir) ||
+    else if (m_strRemoteDir.IsEmpty() || Unsafe(m_strRemoteDir) ||
              m_strRemoteDir.Find(L"..") >= 0)
-        strMessage = L"服务器上传目录需以 / 开头，且不能包含 .. 或换行";
+        strMessage = L"服务器上传目录不能为空，且不能包含 .. 或换行；不以 / 开头表示相对于 FTP 登录目录";
     else if (m_nEncoding < 0 || m_nEncoding > 2)
         strMessage = L"文件名编码无效，请重新选择";
     else if (m_nPostAction < 0 || m_nPostAction > 2)
@@ -66,6 +67,8 @@ bool TaskConfig::Validate(CString& strMessage) const
         strMessage = L"服务器同名文件处理无效，请重新选择";
     else if (m_unScanInterval < ConfigLimits::m_unIntervalMin || m_unScanInterval > ConfigLimits::m_unIntervalMax)
         strMessage = L"本地文件扫描间隔必须为 1–86400 秒";
+    else if (m_unUploadIntervalMs > ConfigLimits::m_unUploadIntervalMsMax)
+        strMessage = L"每个文件上传间隔必须为 0–86400000 毫秒（0 表示连续上传）";
     else if (m_unStableSec < ConfigLimits::m_unIntervalMin || m_unStableSec > ConfigLimits::m_unIntervalMax)
         strMessage = L"上传前文件不变时间必须为 1–86400 秒";
     else if (m_unMaxFileRetry < ConfigLimits::m_unRetryMin || m_unMaxFileRetry > ConfigLimits::m_unRetryMax)
@@ -205,6 +208,12 @@ bool CConfigStore::Load(const CString& strPath, GlobalConfig& stGlobal, std::vec
         NUM(m_nPostAction, "PostAction", 0, 2);
         NUM(m_nRemoteExist, "RemoteExist", 0, 2);
         NUM(m_unScanInterval, "ScanInterval", ConfigLimits::m_unIntervalMin, ConfigLimits::m_unIntervalMax);
+        // 新键按毫秒读取；旧键按秒换算，保留已有配置的实际等待时长。
+        if (ReadString(strSource, strSection, L"UploadIntervalMs", L"").IsEmpty())
+            stConfig.m_unUploadIntervalMs =
+                ReadNumber(strSource, strSection, L"UploadInterval", 0, 0, ConfigLimits::m_unIntervalMax) * 1000;
+        else
+            NUM(m_unUploadIntervalMs, "UploadIntervalMs", 0, ConfigLimits::m_unUploadIntervalMsMax);
         NUM(m_unStableSec, "StableSec", ConfigLimits::m_unIntervalMin, ConfigLimits::m_unIntervalMax);
         NUM(m_unMaxFileRetry, "MaxFileRetry", ConfigLimits::m_unRetryMin, ConfigLimits::m_unRetryMax);
         NUM(m_unEmptyDirAgeDays, "EmptyDirAgeDays", ConfigLimits::m_unEmptyDirDaysMin, ConfigLimits::m_unEmptyDirDaysMax);
@@ -324,6 +333,7 @@ bool CConfigStore::Save(const CString& strPath, const GlobalConfig& stGlobal, co
         WSTR("IncludeMask", stConfig.m_strIncludeMask);
         WSTR("ExcludeMask", stConfig.m_strExcludeMask);
         WNUM("ScanInterval", stConfig.m_unScanInterval);
+        WNUM("UploadIntervalMs", stConfig.m_unUploadIntervalMs);
         WNUM("StableSec", stConfig.m_unStableSec);
         WNUM("PostAction", stConfig.m_nPostAction);
         WSTR("BackupDir", stConfig.m_strBackupDir);

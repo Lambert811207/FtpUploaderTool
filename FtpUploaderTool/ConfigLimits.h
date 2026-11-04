@@ -8,6 +8,7 @@ namespace ConfigLimits
     const UINT m_unPortMax = 65535;
     const UINT m_unIntervalMin = 1;
     const UINT m_unIntervalMax = 86400;
+    const UINT m_unUploadIntervalMsMax = 86400000;
     const UINT m_unRetryMin = 1;
     const UINT m_unRetryMax = 1000;
     const UINT m_unEmptyDirDaysMin = 1;

@@ -373,6 +373,7 @@ void CFtpClient::Disconnect()
 {
     m_ftpSocketControl.Close();
     m_strCwd.Empty();
+    m_strLoginDir.Empty();
     m_strABuffer.Empty();
 }
 
@@ -474,8 +475,17 @@ int CFtpClient::ReadReply()
 // 一条命令对应一次应答读取，拒绝换行以免意外拼入其他 FTP 命令。
 int CFtpClient::Command(const CString& strCommand)
 {
+    CString strVerb = strCommand.SpanExcluding(L" \r\n");
+    strVerb.MakeUpper();
+    bool bCredential = strVerb == L"PASS" || strVerb == L"USER" || strVerb == L"ACCT";
+    m_strCommand = bCredential ? strVerb + L" [已隐藏]" : strCommand;
+    m_strReply.Empty();
+    m_nCode = 0;
     if (strCommand.FindOneOf(L"\r\n") >= 0)
+    {
+        m_strCommand = strVerb;
         return FE_FILE_PERM;
+    }
     CStringA strABytes = ToBytes(strCommand, m_unCodePage) + "\r\n";
     int nError = m_ftpSocketControl.SendAll(strABytes, strABytes.GetLength(), m_stConfig.m_unIoTimeout * 1000);
     return nError ? nError : ReadReply();
@@ -486,6 +496,8 @@ int CFtpClient::Connect()
 {
     Disconnect();
     m_nCode = 0;
+    m_strReply.Empty();
+    m_strCommand = L"连接欢迎消息";
     m_unCodePage = m_stConfig.m_nEncoding == ENC_UTF8 ? CP_UTF8 : 936;
     sockaddr_in stAddress;
     int nResolve =
@@ -545,7 +557,43 @@ int CFtpClient::Connect()
         }
     }
     nError = Command(L"TYPE I");
-    return nError ? nError : Expect(200);
+    if (!nError)
+        nError = Expect(200);
+    // 相对路径以每次登录的初始目录为基准，不能以最后一个文件的目录为基准。
+    if (!nError && m_stConfig.m_strRemoteDir.Left(1) != L"/")
+    {
+        nError = Command(L"PWD");
+        if (!nError)
+            nError = Expect(257);
+        if (nError)
+            return nError;
+        int nQuote = m_strReply.Find(L'"');
+        if (nQuote < 0)
+            return FE_PROTOCOL;
+        CString strDirectory;
+        bool bClosed = false;
+        for (int nIndex = nQuote + 1; nIndex < m_strReply.GetLength(); ++nIndex)
+        {
+            WCHAR ch = m_strReply[nIndex];
+            if (ch == L'"')
+            {
+                if (nIndex + 1 < m_strReply.GetLength() && m_strReply[nIndex + 1] == L'"')
+                    ++nIndex;
+                else
+                {
+                    bClosed = true;
+                    break;
+                }
+            }
+            strDirectory += ch;
+        }
+        if (!bClosed || strDirectory.Left(1) != L"/" || strDirectory.FindOneOf(L"\r\n") >= 0)
+            return FE_PROTOCOL;
+        strDirectory.TrimRight(L'/');
+        m_strLoginDir = strDirectory.IsEmpty() ? CString(L"/") : strDirectory;
+        m_strCwd = m_strLoginDir;
+    }
+    return nError;
 }
 
 int CFtpClient::Noop()
@@ -554,12 +602,54 @@ int CFtpClient::Noop()
     return nError ? nError : Expect(200);
 }
 
-// 先尝试进入目标目录，不存在时再逐层创建并进入。
-int CFtpClient::EnsureDirectory(const CString& strDirectory)
+CString CFtpClient::AbsoluteDirectory(const CString& strDirectory) const
 {
+    CString strResult(strDirectory);
+    if (strResult.Left(1) != L"/")
+    {
+        if (m_strLoginDir.IsEmpty())
+            return CString();
+        strResult = m_strLoginDir + (m_strLoginDir == L"/" ? L"" : L"/") + strResult;
+    }
+    strResult.TrimRight(L'/');
+    return strResult.IsEmpty() ? CString(L"/") : strResult;
+}
+
+CString CFtpClient::DirectoryArgument(const CString& strAbsolute) const
+{
+    if (m_stConfig.m_strRemoteDir.Left(1) == L"/" || m_strCwd.IsEmpty())
+        return strAbsolute;
+    std::vector<CString> vecCurrent;
+    std::vector<CString> vecTarget;
+    int nStart = 0;
+    CString strPart;
+    while (!(strPart = m_strCwd.Tokenize(L"/", nStart)).IsEmpty())
+        vecCurrent.push_back(strPart);
+    nStart = 0;
+    while (!(strPart = strAbsolute.Tokenize(L"/", nStart)).IsEmpty())
+        vecTarget.push_back(strPart);
+    size_t nCommon = 0;
+    while (nCommon < vecCurrent.size() && nCommon < vecTarget.size() &&
+           vecCurrent[nCommon] == vecTarget[nCommon])
+        ++nCommon;
+    CString strResult;
+    for (size_t nIndex = nCommon; nIndex < vecCurrent.size(); ++nIndex)
+        strResult += L"../";
+    for (size_t nIndex = nCommon; nIndex < vecTarget.size(); ++nIndex)
+        strResult += vecTarget[nIndex] + L"/";
+    strResult.TrimRight(L'/');
+    return strResult.IsEmpty() ? CString(L".") : strResult;
+}
+
+// 逐层检查/创建，并保留绝对或相对命令语义；不额外进入 FTP 根目录。
+int CFtpClient::EnsureDirectory(const CString& strRequested)
+{
+    CString strDirectory = AbsoluteDirectory(strRequested);
+    if (strDirectory.IsEmpty())
+        return FE_PROTOCOL;
     if (m_strCwd == strDirectory)
         return FE_OK;
-    int nError = Command(L"CWD " + strDirectory);
+    int nError = Command(L"CWD " + DirectoryArgument(strDirectory));
     if (nError)
         return nError;
     if (m_nCode == 250)
@@ -569,36 +659,113 @@ int CFtpClient::EnsureDirectory(const CString& strDirectory)
     }
     if (m_nCode != 550)
         return MapError();
-    m_strCwd.Empty();
-    nError = Command(L"CWD /");
-    if (nError)
-        return nError;
-    if ((nError = Expect(250)) != FE_OK)
-        return nError;
+    if (strDirectory == L"/")
+        return MapError();
+    CString strPrefix(m_strCwd);
+    strPrefix.TrimRight(L'/');
     int nStart = 0;
+    if (!strPrefix.IsEmpty() && strDirectory.Left(strPrefix.GetLength() + 1) == strPrefix + L"/")
+        nStart = strPrefix.GetLength() + 1;
+    else
+        strPrefix.Empty();
     CString strPart;
     while (!(strPart = strDirectory.Tokenize(L"/", nStart)).IsEmpty())
     {
-        nError = Command(L"CWD " + strPart);
+        strPrefix += L"/" + strPart;
+        nError = Command(L"CWD " + DirectoryArgument(strPrefix));
         if (nError)
             return nError;
         if (m_nCode == 250)
+        {
+            m_strCwd = strPrefix;
             continue;
+        }
         if (m_nCode != 550)
             return MapError();
-        nError = Command(L"MKD " + strPart);
+        nError = Command(L"MKD " + DirectoryArgument(strPrefix));
         if (nError)
             return nError;
         if (m_nCode != 257 && m_nCode != 250 && m_nCode != 550)
             return MapError();
-        nError = Command(L"CWD " + strPart);
+        nError = Command(L"CWD " + DirectoryArgument(strPrefix));
         if (nError)
             return nError;
         if ((nError = Expect(250)) != FE_OK)
             return nError;
+        m_strCwd = strPrefix;
     }
     m_strCwd = strDirectory;
     return FE_OK;
+}
+
+// 与 WinINet 旧程序一致：从配置目录发送带子路径的 STOR/SIZE/RNTO 等命令。
+int CFtpClient::PrepareUploadDirectory(const CString& strDirectory, CString& strRelativeDir)
+{
+    strRelativeDir.Empty();
+    CString strBase(m_stConfig.m_strRemoteDir);
+    // 日期、机器名和 {sub} 展开部分属于相对路径，固定前缀作为会话目录。
+    int nPlaceholder = strBase.Find(L'{');
+    if (nPlaceholder >= 0)
+    {
+        strBase = strBase.Left(nPlaceholder);
+        strBase = strBase.Left(strBase.ReverseFind(L'/') + 1);
+    }
+    strBase.TrimRight(L'/');
+    // 绝对模板没有固定前缀时，以展开后的首级目录为基准，避免要求根目录访问权限。
+    if (strBase.IsEmpty() && nPlaceholder >= 0 && m_stConfig.m_strRemoteDir.Left(1) == L"/")
+    {
+        int nSlash = strDirectory.Find(L'/', 1);
+        strBase = nSlash < 0 ? strDirectory : strDirectory.Left(nSlash);
+    }
+    if (strBase.IsEmpty())
+        strBase = m_stConfig.m_strRemoteDir.Left(1) == L"/" ? CString(L"/") : m_strLoginDir;
+    CString strRequestedBase(strBase);
+    strBase = AbsoluteDirectory(strBase);
+    CString strTarget = AbsoluteDirectory(strDirectory);
+    if (strBase.IsEmpty() || strTarget.IsEmpty())
+        return FE_PROTOCOL;
+    CString strPrefix = strBase == L"/" ? strBase : strBase + L"/";
+    if (strTarget != strBase && strTarget.Left(strPrefix.GetLength()) != strPrefix)
+        return FE_FILE_PERM;
+    int nError = EnsureDirectory(strRequestedBase);
+    if (nError)
+        return nError;
+    nError = EnsureDirectory(strTarget);
+    if (nError)
+        return nError;
+    nError = EnsureDirectory(strBase);
+    if (!nError && strTarget != strBase)
+    {
+        strRelativeDir = strTarget.Mid(strPrefix.GetLength());
+        strRelativeDir.TrimRight(L'/');
+        if (!strRelativeDir.IsEmpty())
+            strRelativeDir += L"/";
+    }
+    return nError;
+}
+
+CString CFtpClient::ErrorText(int nError) const
+{
+    CString strText = FtpErrorText(nError, m_nCode, m_ftpSocketControl.WsaError());
+    bool bLocal = nError == FE_LOCAL_OPEN || nError == FE_LOCAL_READ || nError == FE_TEMP_JOURNAL ||
+                  nError == FE_HISTORY || nError == FE_REMOTE_EXISTS || nError == FE_VERIFY || nError == FE_STOPPED;
+    if (nError == FE_OK || bLocal || m_strCommand.IsEmpty())
+        return strText;
+    CString strCommand(m_strCommand);
+    CString strReply(m_strReply);
+    if (strCommand.Left(5) == L"PASS " || strCommand.Left(5) == L"USER " || strCommand.Left(5) == L"ACCT ")
+        strReply = L"登录应答内容已隐藏";
+    if (!m_stConfig.m_strPassword.IsEmpty())
+    {
+        strCommand.Replace(m_stConfig.m_strPassword, L"[已隐藏]");
+        strReply.Replace(m_stConfig.m_strPassword, L"[已隐藏]");
+    }
+    strReply.Replace(L'\r', L' ');
+    strReply.Replace(L'\n', L' ');
+    strText += L"；命令=" + strCommand.Left(1024);
+    if (!strReply.IsEmpty())
+        strText += L"；服务器回复=" + strReply.Left(2048);
+    return strText;
 }
 
 int CFtpClient::Size(const CString& strName, LONGLONG& llSize, bool& bSupported)
