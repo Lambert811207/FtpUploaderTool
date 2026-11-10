@@ -220,7 +220,7 @@ void CFtpUploaderToolDlg::RebuildTasks()
     RebuildLogView();
 }
 
-// 编辑只在任务全部停止时进入，保存失败不替换原配置。
+// 编辑只在任务全部停止时进入，保存后保持停止，保存失败不替换原配置。
 void CFtpUploaderToolDlg::Edit(int nIndex)
 {
     if (m_bClosing || m_bTaskListLocked || nIndex < 0 || nIndex >= (int)m_managerTasks.Count())
@@ -258,8 +258,6 @@ void CFtpUploaderToolDlg::Edit(int nIndex)
     strEditResult += strCleanupSettings;
     m_loggerFile.Operation(L"编辑任务", strEditResult, &stConfig);
     RebuildTasks();
-    if (m_managerTasks.Config(nIndex).m_bSelected)
-        m_managerTasks.Start(nIndex, L"编辑任务后自动启动");
     RefreshStatus();
 }
 
